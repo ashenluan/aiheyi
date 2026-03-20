@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+@theme {
+  --font-serif: "Cormorant Garamond", serif;
+  --font-ui: "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}
+
+:root {
+  /* Self-hosted fonts via next/font — override @theme values with loaded fonts + fallbacks */
+  --font-serif: var(--nf-serif, "Cormorant Garamond", serif);
+  --font-ui: var(--nf-ui, "Inter", sans-serif);
+  --font-mono: var(--nf-mono, "JetBrains Mono", monospace);
+  /* FEICAI Design System Variables */
+  --bg-page: #0A0A0A;
+  --bg-surface: #141414;
+  --bg-card: #0A0A0A;
+  --border-default: #2A2A2A;
+  --border-gold: #C9A962;
+  --border-subtle: #1A1A1A;
+  --gold-primary: #C9A962;
+  --gold-transparent: #C9A96240;
+  --text-primary: #FFFFFF;
+  --text-secondary: #848484;
+  --text-tertiary: #6A6A6A;
+  --text-muted: #4A4A4A;
+}
+
+@layer base {
+  html, body {
+    height: 100%;
+  }
+}
+
+@keyframes slideIn {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+/* 不确定进度条动画 — 用于智能分镜/翻译等无明确进度的场景 */
+@keyframes indeterminate {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+
+/* 脉冲进度条动画 — 用于流水线执行中的当前阶段 */
+@keyframes progressPulse {
+  0%, 100% { opacity: 0.5; width: 40%; }
+  50%      { opacity: 1; width: 85%; }
+}
+
+/* Thin scrollbar for ref thumbnail bars */
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: #4A4A4A transparent;
+}
+.scrollbar-thin::-webkit-scrollbar {
+  height: 3px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: #4A4A4A;
+  border-radius: 2px;
+}

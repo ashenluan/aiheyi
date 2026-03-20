@@ -7,6 +7,7 @@ import { PipelineProvider } from "./lib/pipelineContext";
 import TaskQueuePanel from "./components/TaskQueuePanel";
 import AgentFAB from "./components/AgentFAB";
 import LicenseGuard from "./components/LicenseGuard";
+import ThemeSync from "./components/ThemeSync";
 
 const cormorantGaramond = Cormorant_Garamond({
   subsets: ["latin"],
@@ -34,17 +35,33 @@ export const metadata: Metadata = {
   description: "AI-powered storyboard generation studio",
 };
 
+const themeBootScript = `(() => {
+  try {
+    const raw = localStorage.getItem("feicai-settings");
+    const parsed = raw ? JSON.parse(raw) : {};
+    const theme = parsed && typeof parsed["ui-theme"] === "string" ? parsed["ui-theme"] : "classic-gold";
+    const valid = ["classic-gold", "ocean-ink", "jade-night", "crimson-noir", "paper-amber", "sky-atelier"];
+    const root = document.documentElement;
+    if (root) root.dataset.uiTheme = valid.includes(theme) ? theme : "classic-gold";
+  } catch {
+    const root = document.documentElement;
+    if (root) root.dataset.uiTheme = "classic-gold";
+  }
+})();`;
+
 export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN" className={`h-full ${cormorantGaramond.variable} ${inter.variable} ${jetbrainsMono.variable}`}>
+    <html lang="zh-CN" suppressHydrationWarning className={`h-full ${cormorantGaramond.variable} ${inter.variable} ${jetbrainsMono.variable}`}>
       <body className="h-full overflow-hidden bg-[var(--bg-page)] text-[var(--text-primary)] font-ui antialiased">
+        <script dangerouslySetInnerHTML={{ __html: themeBootScript }} />
         <TaskQueueProvider>
           <ToastProvider>
             <PipelineProvider>
+              <ThemeSync />
               <LicenseGuard>
                 {children}
                 <TaskQueuePanel />

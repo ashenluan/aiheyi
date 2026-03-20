@@ -46,6 +46,7 @@ import { kvSet, kvLoad, kvRemove } from "../lib/kvDB";
 import { parseChapters } from "../lib/chapterParser";
 import { archiveCurrentWorkspace, overwriteProject, getActiveProjectId, hasWorkspaceData } from "../lib/projects";
 import AgentStoryboardPanel from "../components/AgentStoryboardPanel";
+import WorkflowReadinessPanel from "../components/WorkflowReadinessPanel";
 
 // ═══ 智能分镜类型定义 ═══
 interface AnalysisPlanItem {
@@ -96,7 +97,7 @@ function ModeGuide({ mode }: { mode: "pipeline" | "smart" }) {
     : "🧠 AI 出方案，你来微调：分析剧本 → 编辑每格画面 → 确认翻译 → 生图";
 
   return (
-    <div ref={ref} className="relative flex items-center gap-2 px-3 py-2 bg-[#0D0D0D] border border-[var(--border-default)]">
+    <div ref={ref} className="relative flex items-center gap-2 px-3 py-2 bg-[var(--surface-contrast-strong)] border border-[var(--border-default)] shadow-[var(--theme-shadow-soft)]">
       <Info size={13} className="text-[var(--gold-primary)] shrink-0" />
       <span className="text-[12px] text-[var(--text-muted)] truncate">{title}</span>
       <button
@@ -106,7 +107,7 @@ function ModeGuide({ mode }: { mode: "pipeline" | "smart" }) {
         {show ? "收起" : "了解更多"}
       </button>
       {show && (
-        <div className="absolute z-50 top-full left-0 right-0 mt-1 p-4 bg-[#111] border border-[var(--border-default)] shadow-lg shadow-black/40">
+        <div className="absolute z-50 top-full left-0 right-0 mt-1 p-4 bg-[var(--surface-elevated)] border border-[var(--border-default)] shadow-[var(--theme-shadow-card)] backdrop-blur-md">
           {isPipeline ? (
             <div className="flex flex-col gap-2 text-[12px] text-[var(--text-muted)] leading-relaxed">
               <p className="text-[var(--text-secondary)]"><span className="text-[var(--gold-primary)]">适合：</span>长篇小说/剧本，一键从剧本到完整分镜。</p>
@@ -1156,7 +1157,7 @@ export default function PipelinePage() {
         const tPct = tTotal > 0 ? Math.round((tDone / tTotal) * 100) : 0;
         return (
           <div className="fixed inset-0 z-[45] flex items-start justify-center pointer-events-none" style={{ paddingTop: "80px" }}>
-            <div className="pointer-events-auto flex flex-col gap-0 bg-[#1A1200]/95 border border-[var(--gold-primary)] shadow-[0_0_30px_rgba(201,169,98,0.15)] backdrop-blur-sm max-w-[600px] w-[500px] overflow-hidden">
+            <div className="pointer-events-auto flex flex-col gap-0 bg-[var(--surface-accent-strong)] border border-[var(--gold-primary)] shadow-[var(--theme-shadow-card)] backdrop-blur-sm max-w-[600px] w-[500px] overflow-hidden">
               <div className="flex items-center gap-4 px-6 py-4">
                 <Loader size={20} className="text-[var(--gold-primary)] animate-spin shrink-0" />
                 <div className="flex flex-col gap-1 flex-1">
@@ -1173,7 +1174,7 @@ export default function PipelinePage() {
               </div>
               {/* 翻译进度条 */}
               <div className="px-4 pb-3">
-                <div className="h-[6px] w-full bg-[#2A2000] rounded-full overflow-hidden">
+                <div className="h-[6px] w-full bg-[var(--surface-accent-track)] rounded-full overflow-hidden">
                   <div className="h-full bg-[var(--gold-primary)] rounded-full transition-all duration-300 ease-out" style={{ width: tTotal > 0 ? `${tPct}%` : '0%' }} />
                 </div>
               </div>
@@ -1184,7 +1185,7 @@ export default function PipelinePage() {
       {/* 智能分镜分析提示面板（浮动在遮罩之上） */}
       {analyzing && (
         <div className="fixed inset-0 z-[45] flex items-start justify-center pointer-events-none" style={{ paddingTop: "80px" }}>
-          <div className="pointer-events-auto flex flex-col gap-0 bg-[#1A1200]/95 border border-[var(--gold-primary)] shadow-[0_0_30px_rgba(201,169,98,0.15)] backdrop-blur-sm max-w-[600px] w-[500px] overflow-hidden">
+          <div className="pointer-events-auto flex flex-col gap-0 bg-[var(--surface-accent-strong)] border border-[var(--gold-primary)] shadow-[var(--theme-shadow-card)] backdrop-blur-sm max-w-[600px] w-[500px] overflow-hidden">
             <div className="flex items-center gap-4 px-6 py-4">
               <Loader size={20} className="text-[var(--gold-primary)] animate-spin shrink-0" />
               <div className="flex flex-col gap-1 flex-1">
@@ -1201,7 +1202,7 @@ export default function PipelinePage() {
             </div>
             {/* 分析进度条 */}
             <div className="px-4 pb-3">
-              <div className="h-[6px] w-full bg-[#2A2000] rounded-full overflow-hidden">
+              <div className="h-[6px] w-full bg-[var(--surface-accent-track)] rounded-full overflow-hidden">
                 <div className="h-full bg-[var(--gold-primary)] rounded-full transition-all duration-300 ease-out" style={{ width: `${analyzeProgress}%` }} />
               </div>
             </div>
@@ -1211,7 +1212,7 @@ export default function PipelinePage() {
                 <div key={i} className={`flex-1 h-[3px] rounded-full transition-all duration-300 ${
                   i < analyzeStepIndex ? 'bg-[var(--gold-primary)]' :
                   i === analyzeStepIndex ? 'bg-[var(--gold-primary)]/60' :
-                  'bg-[#2A2000]'
+                  'bg-[var(--surface-accent-track)]'
                 }`} title={step} />
               ))}
             </div>
@@ -1224,7 +1225,7 @@ export default function PipelinePage() {
         const totalPct = Math.round(((doneCount * 100) + (activeStage ? pipelineSubProgress : 0)) / stages.length);
         return (
           <div className="fixed inset-0 z-[45] flex items-start justify-center pointer-events-none" style={{ paddingTop: "80px" }}>
-            <div className="pointer-events-auto flex flex-col gap-0 bg-[#1A1200]/95 border border-[var(--gold-primary)] shadow-[0_0_30px_rgba(201,169,98,0.15)] backdrop-blur-sm max-w-[600px] w-[500px] overflow-hidden">
+            <div className="pointer-events-auto flex flex-col gap-0 bg-[var(--surface-accent-strong)] border border-[var(--gold-primary)] shadow-[var(--theme-shadow-card)] backdrop-blur-sm max-w-[600px] w-[500px] overflow-hidden">
               <div className="flex items-center gap-4 px-6 py-4">
                 <Loader size={20} className="text-[var(--gold-primary)] animate-spin shrink-0" />
                 <div className="flex flex-col gap-1 flex-1">
@@ -1241,14 +1242,14 @@ export default function PipelinePage() {
               </div>
               {/* 总进度条 */}
               <div className="px-4 pb-2">
-                <div className="h-[6px] w-full bg-[#2A2000] rounded-full overflow-hidden">
+                <div className="h-[6px] w-full bg-[var(--surface-accent-track)] rounded-full overflow-hidden">
                   <div className="h-full bg-[var(--gold-primary)] rounded-full transition-all duration-500 ease-out" style={{ width: `${totalPct}%` }} />
                 </div>
               </div>
               {/* 阶段分段进度条 */}
               <div className="flex gap-[3px] px-4 pb-2">
                 {stages.map((s) => (
-                  <div key={s.num} className="flex-1 h-[4px] bg-[#2A2000] rounded-full overflow-hidden">
+                  <div key={s.num} className="flex-1 h-[4px] bg-[var(--surface-accent-track)] rounded-full overflow-hidden">
                     {s.status === "done" ? (
                       <div className="h-full w-full bg-[var(--gold-primary)] rounded-full" />
                     ) : s.status === "active" ? (
@@ -1438,6 +1439,8 @@ export default function PipelinePage() {
           </div>
         </div>
 
+        <WorkflowReadinessPanel context="pipeline" />
+
         {/* ═══ 标签栏（分析中/执行中/有分析结果时锁定切换） ═══ */}
         <div className="flex items-center gap-6 border-b border-[var(--border-default)]">
           <button
@@ -1506,7 +1509,7 @@ export default function PipelinePage() {
         </div>
 
         {/* ═══ 操作流程说明 ═══ */}
-        <div className="p-4 border border-[var(--border-default)] bg-[#0D0D0D]">
+        <div className="p-4 border border-[var(--border-default)] bg-[var(--surface-contrast-strong)] shadow-[var(--theme-shadow-soft)]">
           {activeTab === "pipeline" ? (
             /* ── 节拍拆解模式流程 ── */
             <div className="flex flex-col gap-3">
@@ -1527,7 +1530,7 @@ export default function PipelinePage() {
                   { icon: <Video size={15} />, label: "图生视频", desc: "分镜图 → Seedance 视频" },
                 ].map((step, i, arr) => (
                   <div key={i} className="flex items-center gap-1">
-                    <div className="flex items-center gap-2 px-3 py-2 bg-[#141414] border border-[var(--border-default)] hover:border-[var(--gold-primary)]/40 transition group">
+                    <div className="flex items-center gap-2 px-3 py-2 bg-[var(--surface-contrast)] border border-[var(--border-default)] hover:border-[var(--gold-primary)]/40 transition group shadow-[var(--theme-shadow-soft)]">
                       <span className="text-[var(--gold-primary)] group-hover:scale-110 transition-transform">{step.icon}</span>
                       <div className="flex flex-col">
                         <span className="text-[13px] font-medium text-[var(--text-primary)] leading-tight">{step.label}</span>
@@ -1560,7 +1563,7 @@ export default function PipelinePage() {
                   { icon: <Video size={15} />, label: "图生视频", desc: "分镜图 → Seedance 视频" },
                 ].map((step, i, arr) => (
                   <div key={i} className="flex items-center gap-1">
-                    <div className="flex items-center gap-2 px-3 py-2 bg-[#141414] border border-[var(--border-default)] hover:border-[var(--gold-primary)]/40 transition group">
+                    <div className="flex items-center gap-2 px-3 py-2 bg-[var(--surface-contrast)] border border-[var(--border-default)] hover:border-[var(--gold-primary)]/40 transition group shadow-[var(--theme-shadow-soft)]">
                       <span className="text-[var(--gold-primary)] group-hover:scale-110 transition-transform">{step.icon}</span>
                       <div className="flex flex-col">
                         <span className="text-[13px] font-medium text-[var(--text-primary)] leading-tight">{step.label}</span>
@@ -1698,7 +1701,7 @@ export default function PipelinePage() {
                   value={localStylePrompt}
                   onChange={(e) => handleStylePromptChange(e.target.value)}
                   rows={4}
-                  className="px-3 py-2 bg-[#0A0A0A] border border-[var(--border-default)] text-[12px] text-[var(--text-secondary)] outline-none focus:border-[var(--gold-primary)] transition resize-y leading-relaxed"
+                  className="px-3 py-2 bg-[var(--bg-card)] border border-[var(--border-default)] text-[12px] text-[var(--text-secondary)] outline-none focus:border-[var(--gold-primary)] transition resize-y leading-relaxed"
                   placeholder="手动输入风格描述，或上传参考图由 AI 自动识别填充..."
                 />
                 <span className="text-[10px] text-[var(--text-muted)]">可手动输入风格描述；上传参考图后 AI 识别会自动覆盖此内容</span>
@@ -1707,7 +1710,7 @@ export default function PipelinePage() {
           </div>
 
           {/* ── 模型使用建议 ── */}
-          <div className="flex items-start gap-3 px-4 py-3 bg-[#0D0D0D] border border-[var(--border-default)]">
+          <div className="flex items-start gap-3 px-4 py-3 bg-[var(--surface-contrast-strong)] border border-[var(--border-default)] shadow-[var(--theme-shadow-soft)]">
             <Info size={15} className="text-[var(--gold-primary)] shrink-0 mt-0.5" />
             {activeTab === "pipeline" ? (
               <div className="flex flex-col gap-1">
@@ -1724,9 +1727,9 @@ export default function PipelinePage() {
                     { name: "GPT-4o", tag: "可选", tip: "12.8万 tokens，综合能力均衡" },
                     { name: "Gemini 2.5 Flash", tag: "快速", tip: "100万 tokens，速度快成本低" },
                   ].map((m) => (
-                    <span key={m.name} title={m.tip} className="inline-flex items-center gap-1 px-2 py-1 text-[11px] border border-[var(--border-default)] bg-[#141414] hover:border-[var(--gold-primary)]/40 transition cursor-default">
+                    <span key={m.name} title={m.tip} className="inline-flex items-center gap-1 px-2 py-1 text-[11px] border border-[var(--border-default)] bg-[var(--surface-contrast)] hover:border-[var(--gold-primary)]/40 transition cursor-default">
                       <span className="text-[var(--text-primary)]">{m.name}</span>
-                      <span className={`text-[9px] px-1 py-0.5 leading-none ${m.tag === "推荐" ? "bg-[var(--gold-primary)]/20 text-[var(--gold-primary)]" : "bg-white/5 text-[var(--text-muted)]"}`}>{m.tag}</span>
+                      <span className={`text-[9px] px-1 py-0.5 leading-none ${m.tag === "推荐" ? "bg-[var(--gold-primary)]/20 text-[var(--gold-primary)]" : "bg-[var(--surface-overlay)] text-[var(--text-muted)]"}`}>{m.tag}</span>
                     </span>
                   ))}
                 </div>
@@ -1747,9 +1750,9 @@ export default function PipelinePage() {
                     { name: "GPT-4o", tag: "可选", tip: "综合能力均衡，指令遵循度高" },
                     { name: "Gemini 2.5 Flash", tag: "快速", tip: "速度快可作为快速预览" },
                   ].map((m) => (
-                    <span key={m.name} title={m.tip} className="inline-flex items-center gap-1 px-2 py-1 text-[11px] border border-[var(--border-default)] bg-[#141414] hover:border-[var(--gold-primary)]/40 transition cursor-default">
+                    <span key={m.name} title={m.tip} className="inline-flex items-center gap-1 px-2 py-1 text-[11px] border border-[var(--border-default)] bg-[var(--surface-contrast)] hover:border-[var(--gold-primary)]/40 transition cursor-default">
                       <span className="text-[var(--text-primary)]">{m.name}</span>
-                      <span className={`text-[9px] px-1 py-0.5 leading-none ${m.tag === "推荐" ? "bg-[var(--gold-primary)]/20 text-[var(--gold-primary)]" : "bg-white/5 text-[var(--text-muted)]"}`}>{m.tag}</span>
+                      <span className={`text-[9px] px-1 py-0.5 leading-none ${m.tag === "推荐" ? "bg-[var(--gold-primary)]/20 text-[var(--gold-primary)]" : "bg-[var(--surface-overlay)] text-[var(--text-muted)]"}`}>{m.tag}</span>
                     </span>
                   ))}
                 </div>
@@ -1856,8 +1859,8 @@ export default function PipelinePage() {
                   }}
                   className={`flex items-center justify-center gap-2 w-full py-2.5 px-3.5 text-[12px] font-medium border transition ${
                     btnEnabled
-                      ? "border-[var(--gold-primary)] text-[var(--gold-primary)] bg-[#1a1a0a] hover:bg-[var(--gold-transparent)] cursor-pointer"
-                      : "opacity-50 border-[var(--border-default)] text-[var(--text-muted)] bg-[#0F0F0F] cursor-not-allowed"
+                      ? "border-[var(--gold-primary)] text-[var(--gold-primary)] bg-[var(--surface-accent-soft)] hover:bg-[var(--gold-transparent)] cursor-pointer"
+                      : "opacity-50 border-[var(--border-default)] text-[var(--text-muted)] bg-[var(--surface-contrast)] cursor-not-allowed"
                   }`}
                   disabled={!btnEnabled}
                 >
@@ -2000,7 +2003,7 @@ export default function PipelinePage() {
                       {/* 朝上的三角箭头 */}
                       <div className="w-0 h-0 border-l-[10px] border-l-transparent border-r-[10px] border-r-transparent border-b-[10px] border-b-[var(--gold-primary)]" />
                       {/* 弹窗主体 */}
-                      <div className="flex flex-col gap-3 px-5 py-4 bg-[#1A1200] border border-[var(--gold-primary)] shadow-[0_0_24px_rgba(201,169,98,0.2)] max-w-[360px] w-[340px]">
+                      <div className="flex flex-col gap-3 px-5 py-4 bg-[var(--surface-accent-strong)] border border-[var(--gold-primary)] shadow-[var(--theme-shadow-card)] max-w-[360px] w-[340px]">
                         <div className="flex items-start gap-3">
                           <ChevronsDown size={20} className="text-[var(--gold-primary)] shrink-0 mt-0.5 animate-bounce" />
                           <div className="flex flex-col gap-1.5">
@@ -2026,7 +2029,7 @@ export default function PipelinePage() {
 
                 {/* AI 推理过程 */}
                 {analysisResult.reasoning && (
-                  <div className="p-4 border border-[var(--border-default)] bg-[#0F0F0F] text-[12px] text-[var(--text-secondary)] leading-relaxed whitespace-pre-wrap max-h-[200px] overflow-auto">
+                  <div className="p-4 border border-[var(--border-default)] bg-[var(--surface-contrast)] text-[12px] text-[var(--text-secondary)] leading-relaxed whitespace-pre-wrap max-h-[200px] overflow-auto">
                     {analysisResult.reasoning}
                   </div>
                 )}
@@ -2034,7 +2037,7 @@ export default function PipelinePage() {
                 {/* 方案卡片 */}
                 <div className="flex flex-col gap-4">
                   {analysisResult.plan.map((ep, idx) => (
-                    <div key={ep.episodeId} className="flex flex-col gap-4 p-5 border border-[var(--border-default)] bg-[#141414]">
+                    <div key={ep.episodeId} className="flex flex-col gap-4 p-5 border border-[var(--border-default)] bg-[var(--surface-contrast)] shadow-[var(--theme-shadow-soft)]">
                       {/* 卡片头 */}
                       <div className="flex items-center gap-3">
                         <div className="w-7 h-7 flex items-center justify-center bg-[var(--gold-primary)] text-[#0A0A0A] text-[13px] font-bold rounded-full shrink-0">
@@ -2060,7 +2063,7 @@ export default function PipelinePage() {
                           return (
                             <div
                               key={bi}
-                              className={`group relative flex flex-col gap-1.5 p-3 bg-[#0F0F0F] border rounded-[4px] ${
+                              className={`group relative flex flex-col gap-1.5 p-3 bg-[var(--surface-contrast)] border rounded-[4px] ${
                                 isEditing ? "border-[var(--gold-primary)]" : "border-[var(--border-default)]"
                               }`}
                             >
@@ -2080,7 +2083,7 @@ export default function PipelinePage() {
                               {isEditing ? (
                                 <div className="flex flex-col gap-1.5">
                                   <textarea
-                                    className="w-full min-h-[60px] p-1.5 text-[11px] bg-[#0A0A0A] border border-[var(--gold-primary)]/40 text-[var(--text-primary)] leading-relaxed rounded resize-y outline-none focus:border-[var(--gold-primary)]"
+                                    className="w-full min-h-[60px] p-1.5 text-[11px] bg-[var(--bg-card)] border border-[var(--gold-primary)]/40 text-[var(--text-primary)] leading-relaxed rounded resize-y outline-none focus:border-[var(--gold-primary)]"
                                     value={editText}
                                     onChange={(e) => setEditText(e.target.value)}
                                     autoFocus
@@ -2120,7 +2123,7 @@ export default function PipelinePage() {
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-[11px] text-[var(--text-muted)]">🎬</span>
                           {ep.scenes.map((sc, si) => (
-                            <span key={si} className="px-2 py-0.5 text-[11px] text-[var(--text-secondary)] bg-[#1A1200] border border-[var(--gold-primary)]/20">
+                            <span key={si} className="px-2 py-0.5 text-[11px] text-[var(--text-secondary)] bg-[var(--surface-accent-soft)] border border-[var(--gold-primary)]/20">
                               {sc}
                             </span>
                           ))}
@@ -2161,7 +2164,7 @@ export default function PipelinePage() {
         {activeTab === "agentStoryboard" && (
           <>
             {/* 模式说明 */}
-            <div className="p-4 border border-[var(--border-default)] bg-[#0D0D0D]">
+            <div className="p-4 border border-[var(--border-default)] bg-[var(--surface-contrast-strong)] shadow-[var(--theme-shadow-soft)]">
               <div className="flex flex-col gap-3">
                 <div className="flex items-center gap-2 mb-1">
                   <Bot size={16} className="text-[var(--gold-primary)]" />
@@ -2178,7 +2181,7 @@ export default function PipelinePage() {
                     { icon: <ImageIcon size={15} />, label: "AI 生图", desc: "自动生成分镜图" },
                   ].map((step, i, arr) => (
                     <div key={i} className="flex items-center gap-1">
-                      <div className="flex items-center gap-2 px-3 py-2 bg-[#141414] border border-[var(--border-default)] hover:border-[var(--gold-primary)]/40 transition group">
+                      <div className="flex items-center gap-2 px-3 py-2 bg-[var(--surface-contrast)] border border-[var(--border-default)] hover:border-[var(--gold-primary)]/40 transition group shadow-[var(--theme-shadow-soft)]">
                         <span className="text-[var(--gold-primary)] group-hover:scale-110 transition-transform">{step.icon}</span>
                         <div className="flex flex-col">
                           <span className="text-[13px] font-medium text-[var(--text-primary)] leading-tight">{step.label}</span>

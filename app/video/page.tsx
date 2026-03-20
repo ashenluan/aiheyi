@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useToast } from "../components/Toast";
 import { useTaskQueue } from "../lib/taskQueue";
 import Sidebar from "../components/Sidebar";
@@ -19,11 +19,15 @@ import VideoPlayerModal from "./components/VideoPlayerModal";
 import JianyingExportModal from "./components/JianyingExportModal";
 import AIPromptGenerateModal from "./components/AIPromptGenerateModal";
 import DialoguePickerModal from "./components/DialoguePickerModal";
+import WorkflowHandoffChecklist from "../components/WorkflowHandoffChecklist";
+import WorkflowRecoveryPanel, { type WorkflowRecoveryPanelItem } from "../components/WorkflowRecoveryPanel";
 import { kvLoad, kvSet, kvKeysByPrefix } from "../lib/kvDB";
 import { isSoraModel, type SoraCharacter, type SoraCharCategory, SORA_CHAR_CATEGORY_LABEL } from "../lib/zhenzhen/types";
 import SoraLibraryModal, { type CharUploadAdapter, type StudioItem } from "./components/SoraLibraryModal";
 import { formatPromptLanguage, resolveVideoPromptProfile, type PromptLanguage } from "./lib/promptProfiles";
 import { mergeDialogues, type ImportedDialogue } from "./lib/dialogues";
+import { buildStudioToVideoChecklist } from "../lib/workflowHandoff";
+import { buildOutputEntries, persistProvenanceManifest, summarizeAssetList } from "../lib/provenance/client";
 
 /**
  * Resize a data-URL image for vision API — shrink to maxDim and re-encode as JPEG.
@@ -391,22 +395,22 @@ function SourceThumb({
   return (
     <div onClick={onClick}
       className={`relative flex items-center justify-center h-20 rounded cursor-pointer transition-all ${
-        isSelected ? "ring-2 ring-[var(--gold-primary)] bg-[#141414]" : "bg-[#141414] border border-[var(--border-default)]"
+        isSelected ? "ring-2 ring-[var(--gold-primary)] bg-[var(--surface-contrast)]" : "bg-[var(--surface-contrast)] border border-[var(--border-default)]"
       }`}>
       {hasImage && url ? (
-        <img src={url} alt={label} className="w-full h-full object-contain bg-[#0A0A0A] rounded" />
+        <img src={url} alt={label} className="w-full h-full object-contain bg-[var(--bg-card)] rounded" />
       ) : (
         <span className={`text-[12px] ${isSelected || gold ? "text-[var(--gold-primary)]" : "text-[var(--text-muted)]"}`}>{label}</span>
       )}
       {onZoom && hasImage && (
         <button onClick={(e) => { e.stopPropagation(); onZoom(); }}
-          className="absolute top-1 left-1 w-5 h-5 flex items-center justify-center rounded bg-[#0A0A0A80] hover:bg-[#0A0A0AA0] cursor-pointer">
+          className="absolute top-1 left-1 w-5 h-5 flex items-center justify-center rounded bg-[var(--surface-elevated)] hover:bg-[var(--surface-contrast)] cursor-pointer">
           <ZoomIn size={10} className="text-[var(--gold-primary)]" />
         </button>
       )}
       {onDelete && hasImage && (
         <button onClick={(e) => { e.stopPropagation(); onDelete(); }}
-          className="absolute top-1 right-1 w-5 h-5 flex items-center justify-center rounded bg-[#1A1A1A] border border-[#3A3A3A] hover:border-red-400 cursor-pointer">
+          className="absolute top-1 right-1 w-5 h-5 flex items-center justify-center rounded bg-[var(--surface-contrast-strong)] border border-[var(--border-default)] hover:border-red-400 cursor-pointer">
           <X size={10} className="text-[var(--text-secondary)]" />
         </button>
       )}
@@ -530,49 +534,49 @@ function PromptPickerModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()}
-        className="flex flex-col w-[580px] max-h-[80vh] bg-[#1A1A1A] border border-[var(--border-default)] rounded-xl shadow-2xl overflow-hidden">
+        className="flex flex-col w-[580px] max-h-[80vh] bg-[var(--surface-elevated)] border border-[var(--border-default)] rounded-xl shadow-[var(--theme-shadow-card)] overflow-hidden">
         {/* 标题栏 */}
         <div className="flex items-center justify-between h-14 px-6 shrink-0">
           <div className="flex items-center gap-2.5">
             <Sparkles size={18} className="text-[var(--gold-primary)]" />
             <span className="text-[16px] font-semibold text-[var(--text-primary)]">选择动态提示词</span>
           </div>
-          <button onClick={onClose} className="flex items-center justify-center w-8 h-8 rounded-md bg-[#0A0A0A] hover:bg-[#2A2A2A] cursor-pointer">
+          <button onClick={onClose} className="flex items-center justify-center w-8 h-8 rounded-md bg-[var(--surface-contrast-strong)] hover:bg-[var(--bg-hover)] cursor-pointer">
             <X size={16} className="text-[var(--text-secondary)]" />
           </button>
         </div>
         <div className="h-px bg-[var(--border-default)]" />
 
         {/* 工具栏：EP/组 + 四宫格/九宫格切换 */}
-        <div className="flex items-center gap-3 h-11 px-6 bg-[#12121280] shrink-0">
+        <div className="flex items-center gap-3 h-11 px-6 bg-[var(--surface-overlay)] shrink-0">
           <select value={browseEp} onChange={(e) => setBrowseEp(e.target.value)} suppressHydrationWarning
-            className="h-7 px-2 bg-[#0A0A0A] border border-[var(--border-default)] rounded text-[11px] font-medium text-[var(--gold-primary)] outline-none cursor-pointer appearance-none">
-            {epList.map((ep) => <option key={ep} value={ep} className="bg-[#0A0A0A]">{ep.toUpperCase()}</option>)}
+            className="h-7 px-2 bg-[var(--bg-card)] border border-[var(--border-default)] rounded text-[11px] font-medium text-[var(--gold-primary)] outline-none cursor-pointer appearance-none">
+            {epList.map((ep) => <option key={ep} value={ep} className="bg-[var(--bg-card)]">{ep.toUpperCase()}</option>)}
           </select>
           {gridTab === "four" && (
             <select value={browseBeat} onChange={(e) => setBrowseBeat(Number(e.target.value))} suppressHydrationWarning
-              className="h-7 px-2 bg-[#0A0A0A] border border-[var(--border-default)] rounded text-[11px] text-[var(--text-secondary)] outline-none cursor-pointer appearance-none">
+              className="h-7 px-2 bg-[var(--bg-card)] border border-[var(--border-default)] rounded text-[11px] text-[var(--text-secondary)] outline-none cursor-pointer appearance-none">
               {Array.from({ length: 9 }, (_, i) => (
-                <option key={i} value={i} className="bg-[#0A0A0A]">组{i + 1}</option>
+                <option key={i} value={i} className="bg-[var(--bg-card)]">组{i + 1}</option>
               ))}
             </select>
           )}
           <div className="flex-1" />
           <div className="flex items-center h-7 rounded border border-[var(--border-default)] overflow-hidden">
             <button onClick={() => setGridTab("four")}
-              className={`flex items-center gap-1.5 px-3 h-full text-[11px] cursor-pointer transition ${gridTab === "four" ? "bg-[var(--gold-primary)] text-[#0A0A0A] font-medium" : "text-[var(--text-secondary)] hover:bg-[#2A2A2A]"}`}>
+              className={`flex items-center gap-1.5 px-3 h-full text-[11px] cursor-pointer transition ${gridTab === "four" ? "bg-[var(--gold-primary)] text-[#0A0A0A] font-medium" : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"}`}>
               <Grid2X2 size={12} />四宫格
             </button>
             <button onClick={() => setGridTab("nine")}
-              className={`flex items-center gap-1.5 px-3 h-full text-[11px] cursor-pointer transition ${gridTab === "nine" ? "bg-[var(--gold-primary)] text-[#0A0A0A] font-medium" : "text-[var(--text-secondary)] hover:bg-[#2A2A2A]"}`}>
+              className={`flex items-center gap-1.5 px-3 h-full text-[11px] cursor-pointer transition ${gridTab === "nine" ? "bg-[var(--gold-primary)] text-[#0A0A0A] font-medium" : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"}`}>
               <Grid3X3 size={12} />九宫格
             </button>
             <button onClick={() => setGridTab("smartNine")}
-              className={`flex items-center gap-1.5 px-3 h-full text-[11px] cursor-pointer transition ${gridTab === "smartNine" ? "bg-[var(--gold-primary)] text-[#0A0A0A] font-medium" : "text-[var(--text-secondary)] hover:bg-[#2A2A2A]"}`}>
+              className={`flex items-center gap-1.5 px-3 h-full text-[11px] cursor-pointer transition ${gridTab === "smartNine" ? "bg-[var(--gold-primary)] text-[#0A0A0A] font-medium" : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"}`}>
               <Sparkles size={12} />智能分镜
             </button>
             <button onClick={() => setGridTab("custom")}
-              className={`flex items-center gap-1.5 px-3 h-full text-[11px] cursor-pointer transition ${gridTab === "custom" ? "bg-[var(--gold-primary)] text-[#0A0A0A] font-medium" : "text-[var(--text-secondary)] hover:bg-[#2A2A2A]"}`}>
+              className={`flex items-center gap-1.5 px-3 h-full text-[11px] cursor-pointer transition ${gridTab === "custom" ? "bg-[var(--gold-primary)] text-[#0A0A0A] font-medium" : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"}`}>
               <LayoutGrid size={12} />自定义
             </button>
           </div>
@@ -599,7 +603,7 @@ function PromptPickerModal({
                     }`}
                   >
                     {/* 缩略图 */}
-                    <div className={`w-full aspect-square bg-[#0A0A0A] flex items-center justify-center ${hasPrompt ? "group-hover:brightness-110" : ""}`}>
+                    <div className={`w-full aspect-square bg-[var(--bg-card)] flex items-center justify-center ${hasPrompt ? "group-hover:brightness-110" : ""}`}>
                       {cell.imageUrl ? (
                         <img src={cell.imageUrl} alt={`格${idx + 1}`} className="w-full h-full object-cover" />
                       ) : (
@@ -608,10 +612,10 @@ function PromptPickerModal({
                     </div>
                     {/* 格子编号标签 */}
                     <div className={`absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded text-[9px] font-medium ${
-                      hasPrompt ? "bg-[var(--gold-primary)] text-[#0A0A0A]" : "bg-[#2A2A2A] text-[var(--text-muted)]"
+                      hasPrompt ? "bg-[var(--gold-primary)] text-[#0A0A0A]" : "bg-[var(--surface-overlay)] text-[var(--text-muted)]"
                     }`}>格{idx + 1}</div>
                     {/* 提示词预览 */}
-                    <div className="px-2.5 py-2 bg-[#141414] min-h-[52px]">
+                    <div className="px-2.5 py-2 bg-[var(--surface-contrast)] min-h-[52px]">
                       <p className={`text-[10px] leading-relaxed line-clamp-3 ${hasPrompt ? "text-[var(--text-secondary)]" : "text-[var(--text-muted)]"}`}>
                         {hasPrompt ? cell.prompt : "无提示词"}
                       </p>
@@ -625,7 +629,7 @@ function PromptPickerModal({
 
         {/* 底部提示 */}
         <div className="h-px bg-[var(--border-default)]" />
-        <div className="flex items-center gap-2 h-9 px-6 bg-[#0D0D0D] shrink-0">
+        <div className="flex items-center gap-2 h-9 px-6 bg-[var(--surface-contrast-strong)] shrink-0">
           <Info size={10} className="text-[var(--text-muted)]" />
           <span className="text-[10px] text-[var(--text-muted)]">点击任意格子即可填入对应提示词，灰色格子表示无提示词</span>
         </div>
@@ -698,14 +702,14 @@ function VideoFrameCaptureModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#00000080]" onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()}
-        className="w-[640px] max-h-[85vh] bg-[#141414] border border-[var(--border-default)] rounded-lg overflow-hidden flex flex-col">
+        className="w-[640px] max-h-[85vh] bg-[var(--surface-elevated)] border border-[var(--border-default)] rounded-lg overflow-hidden flex flex-col shadow-[var(--theme-shadow-card)]">
         {/* Header */}
         <div className="flex items-center justify-between h-12 px-5 border-b border-[var(--border-subtle)] shrink-0">
           <div className="flex items-center gap-2">
             <Scissors size={14} className="text-[var(--gold-primary)]" />
             <span className="text-[13px] font-medium text-[var(--text-primary)]">从视频截取帧</span>
           </div>
-          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded hover:bg-[#2A2A2A] cursor-pointer">
+          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded hover:bg-[var(--bg-hover)] cursor-pointer">
             <X size={14} className="text-[var(--text-tertiary)]" />
           </button>
         </div>
@@ -730,7 +734,7 @@ function VideoFrameCaptureModal({
                           ? "border-[var(--gold-primary)] bg-[#C9A96215]"
                           : "border-[var(--border-default)] hover:border-[var(--text-secondary)]"
                       }`}>
-                      <div className="h-[50px] bg-[#0E0E0E] rounded overflow-hidden flex items-center justify-center">
+                      <div className="h-[50px] bg-[var(--surface-contrast)] rounded overflow-hidden flex items-center justify-center">
                         {card.thumbnailUrl ? (
                           <img src={card.thumbnailUrl} alt={card.label} className="w-full h-full object-contain" />
                         ) : (
@@ -746,7 +750,7 @@ function VideoFrameCaptureModal({
               {/* Preview & seek */}
               {selectedCard?.videoUrl && (
                 <div className="flex flex-col gap-3">
-                  <div className="relative bg-[#0A0A0A] rounded overflow-hidden aspect-video">
+                  <div className="relative bg-[var(--bg-card)] rounded overflow-hidden aspect-video">
                     <video ref={previewVideoRef} src={previewUrl} className="w-full h-full object-contain"
                       onLoadedMetadata={() => {
                         const v = previewVideoRef.current;
@@ -806,10 +810,10 @@ function TimelineCard({ card, isActive, onClick, onDelete, showDelete }: { card:
           <X size={12} className="text-white" />
         </button>
       )}
-      <div className={`flex items-center justify-center h-[136px] rounded bg-[#0E0E0E] border ${isActive ? "border-[var(--gold-primary)]" : "border-[var(--border-default)]"}`}>
+      <div className={`flex items-center justify-center h-[136px] rounded bg-[var(--surface-contrast)] border ${isActive ? "border-[var(--gold-primary)]" : "border-[var(--border-default)]"}`}>
         {card.status === "ready" && card.thumbnailUrl ? (
           <div className="relative w-full h-full">
-            <img src={card.thumbnailUrl} alt={card.label} className="w-full h-full object-contain bg-[#0A0A0A] rounded" />
+            <img src={card.thumbnailUrl} alt={card.label} className="w-full h-full object-contain bg-[var(--bg-card)] rounded" />
             <div className="absolute inset-0 flex items-center justify-center">
               <div className="w-10 h-10 rounded-full bg-[#C9A96260] flex items-center justify-center"><Play size={16} className="text-[var(--gold-primary)] ml-0.5" /></div>
             </div>
@@ -1258,6 +1262,85 @@ export default function VideoPage() {
     : epState.mode === "batchRelay"
       ? (batchRelayPrompts[batchRelayActiveTab] ?? "")
       : (epState.prompts?.[epState.mode] ?? "");
+  const videoHandoffChecklist = useMemo(
+    () =>
+      buildStudioToVideoChecklist({
+        episode,
+        episodes,
+        mode: epState.mode,
+        selectedGridLabel: sourceImages[epState.selectedGrid]?.label || `格${epState.selectedGrid + 1}`,
+        selectedSourceReady: Boolean(sourceImages[epState.selectedGrid]?.url),
+        sourceImageCount: sourceImages.filter((item) => Boolean(item.url)).length,
+        firstFrameReady: Boolean(epState.firstFrameUrl),
+        lastFrameReady: Boolean(epState.lastFrameUrl),
+        refImageCount: epState.refImages.filter((item) => Boolean(item.url)).length,
+        currentPromptLength: currentPrompt.trim().length,
+        selectedModelName: selectedModel.name || selectedModel.model || "未配置模型",
+        selectedModelReady: Boolean(
+          selectedModel.apiKey &&
+          selectedModel.url &&
+          (
+            (selectedModel.model || selectedModel.name || "").trim() ||
+            ["t8star.cn", "geeknow.top", "closeai.icu", "qnaigc.com", "yunwu.ai"].some((domain) => (selectedModel.url || "").includes(domain))
+          )
+        ),
+        selectedModelSupportsMode: selectedModel.modes.includes(epState.mode),
+        readyVideoCount: epState.videoCards.filter((card) => card.status === "ready" && card.videoUrl).length,
+      }),
+    [episode, episodes, epState.mode, epState.selectedGrid, epState.firstFrameUrl, epState.lastFrameUrl, epState.refImages, epState.videoCards, currentPrompt, selectedModel, sourceImages],
+  );
+  async function persistVideoProvenance(options: {
+    title: string;
+    stage: string;
+    prompt: string;
+    videoOutputs?: Array<{ key: string; url?: string; path?: string; label?: string }>;
+    frameOutputs?: Array<{ key: string; url?: string; path?: string; label?: string }>;
+    inputImages?: Array<{ label?: string; url: string; key?: string }>;
+    referenceImages?: Array<{ label?: string; url: string; key?: string }>;
+    endImage?: { label?: string; url: string; key?: string } | null;
+    context?: Record<string, unknown>;
+  }) {
+    try {
+      await persistProvenanceManifest({
+        kind: "video",
+        title: options.title,
+        stage: options.stage,
+        episode,
+        prompt: options.prompt,
+        model: {
+          provider: selectedModel.provider || "third-party",
+          name: selectedModel.name || "",
+          model: selectedModel.model || "",
+          baseUrl: selectedModel.url || "",
+          duration: effectiveDuration,
+          ratio: effectiveRatio,
+          resolution: effectiveResolution,
+          motionStrength: epState.motionStrength,
+        },
+        inputs: {
+          sourceImages: summarizeAssetList(options.inputImages || []),
+          referenceImages: summarizeAssetList(options.referenceImages || []),
+          endImage: options.endImage ? summarizeAssetList([options.endImage]) : [],
+          soraMentions: selectedSoraCharIds
+            .map((id) => soraCharacters.find((char) => char.id === id))
+            .filter(Boolean)
+            .map((char) => `@${char!.username}`),
+        },
+        outputs: [
+          ...buildOutputEntries("videos", options.videoOutputs || []),
+          ...buildOutputEntries("video-frames", options.frameOutputs || []),
+        ],
+        context: {
+          mode: epState.mode,
+          selectedBeat: epState.selectedBeat,
+          selectedGrid: epState.selectedGrid,
+          ...options.context,
+        },
+      });
+    } catch (error) {
+      console.warn("[video-provenance] failed:", error);
+    }
+  }
   const setCurrentPrompt = useCallback((text: string) => {
     if (epState.mode === "single") {
       const key = `b${epState.selectedBeat}-g${epState.selectedGrid}`;
@@ -1724,26 +1807,58 @@ export default function VideoPage() {
             const videoUrl = data.videoUrl || data.video_url || data.video || data.url || "";
             if (videoUrl) {
               stopProgressTimer(newCardId);
-              moduleUpdateCard(episode, newCardId, { status: "ready", progress: 100, videoUrl, thumbnailUrl: data.thumbnailUrl || firstImg });
+              const usedModel = (selectedModel.model || selectedModel.name) || "";
+              moduleUpdateCard(episode, newCardId, { status: "ready", progress: 100, videoUrl, thumbnailUrl: data.thumbnailUrl || firstImg, modelName: usedModel });
               if (!moduleSetAllStates) backgroundResults.push({ ep: episode, label: pair.label, ok: true });
               toast(`${pair.label} 接力视频生成完成！`, "success");
               // Persist to local disk
               const videoKey = `video-${episode}-${newCardId}`;
+              let persistedVideoUrl = videoUrl;
+              let persistedVideoPath = "";
               try {
                 const saveRes = await fetch("/api/local-file", {
                   method: "POST", headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({ category: "videos", key: videoKey, data: videoUrl, type: "video" }),
                 });
-                if (saveRes.ok) moduleUpdateCard(episode, newCardId, { videoUrl: `/api/local-file/videos/${videoKey}` });
+                if (saveRes.ok) {
+                  const saveData = await saveRes.json();
+                  persistedVideoUrl = `/api/local-file/videos/${videoKey}`;
+                  persistedVideoPath = saveData.path || "";
+                  moduleUpdateCard(episode, newCardId, { videoUrl: persistedVideoUrl });
+                }
               } catch { /* persist failed */ }
               // Persist thumbnail
               const thumbKey = `thumb-${episode}-${newCardId}`;
+              let persistedThumbUrl = data.thumbnailUrl || firstImg;
+              let persistedThumbPath = "";
               try {
-                await fetch("/api/local-file", {
+                const thumbRes = await fetch("/api/local-file", {
                   method: "POST", headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({ category: "video-frames", key: thumbKey, data: data.thumbnailUrl || firstImg, type: "image" }),
                 });
+                if (thumbRes.ok) {
+                  const thumbData = await thumbRes.json();
+                  persistedThumbUrl = `/api/local-file/video-frames/${thumbKey}`;
+                  persistedThumbPath = thumbData.path || "";
+                }
               } catch { /* ignore */ }
+              await persistVideoProvenance({
+                title: `${episode.toUpperCase()} ${pair.label} 接力视频`,
+                stage: "batch-relay",
+                prompt: pairPrompt,
+                videoOutputs: [{ key: videoKey, url: persistedVideoUrl, path: persistedVideoPath, label: pair.label }],
+                frameOutputs: [{ key: thumbKey, url: persistedThumbUrl, path: persistedThumbPath, label: `${pair.label} 缩略图` }],
+                inputImages: [
+                  { label: "起始帧", url: firstImg },
+                  { label: "结束帧", url: lastImg },
+                ],
+                endImage: { label: "结束帧", url: lastImg },
+                context: {
+                  cardId: newCardId,
+                  pairKey: pair.key,
+                  pairLabel: pair.label,
+                },
+              });
             } else {
               stopProgressTimer(newCardId);
               moduleUpdateCard(episode, newCardId, { status: "error", progress: 0, thumbnailUrl: firstImg });
@@ -1880,6 +1995,8 @@ export default function VideoPage() {
           // Persist video to local disk, then switch to local serving URL for reliable browser playback
           // CDN URLs may not be accessible from the browser (temp tokens, IP restrictions, CORS, etc.)
           const videoKey = `video-${episode}-${cardId}`;
+          let persistedVideoUrl = videoUrl;
+          let persistedVideoPath = "";
           try {
             const saveRes = await fetch("/api/local-file", {
               method: "POST",
@@ -1889,7 +2006,9 @@ export default function VideoPage() {
             if (saveRes.ok) {
               const saveData = await saveRes.json();
               console.log(`[persistVideo] ✓ saved ${videoKey} (${saveData.sizeMB || "?"}MB)`);
-              moduleUpdateCard(episode, cardId, { videoUrl: `/api/local-file/videos/${videoKey}` });
+              persistedVideoUrl = `/api/local-file/videos/${videoKey}`;
+              persistedVideoPath = saveData.path || "";
+              moduleUpdateCard(episode, cardId, { videoUrl: persistedVideoUrl });
             } else {
               console.warn(`[persistVideo] ✗ save failed: ${saveRes.status}`);
             }
@@ -1898,8 +2017,11 @@ export default function VideoPage() {
           }
           // Persist thumbnail to local disk so it survives restart
           const thumbSrc = data.thumbnailUrl || inputImageUrl;
+          let persistedThumbUrl = thumbSrc;
+          let persistedThumbPath = "";
+          let thumbKey = "";
           if (thumbSrc) {
-            const thumbKey = `thumb-${episode}-${cardId}`;
+            thumbKey = `thumb-${episode}-${cardId}`;
             // For data URLs, save directly; for HTTP URLs, fetch & save
             const thumbData = thumbSrc.startsWith("data:") ? thumbSrc : thumbSrc;
             try {
@@ -1909,13 +2031,34 @@ export default function VideoPage() {
                 body: JSON.stringify({ category: "video-frames", key: thumbKey, data: thumbData, type: "image" }),
               });
               if (thumbRes.ok) {
+                const savedThumb = await thumbRes.json();
                 console.log(`[persistThumb] ✓ saved ${thumbKey}`);
-                moduleUpdateCard(episode, cardId, { thumbnailUrl: `/api/local-file/video-frames/${thumbKey}` });
+                persistedThumbUrl = `/api/local-file/video-frames/${thumbKey}`;
+                persistedThumbPath = savedThumb.path || "";
+                moduleUpdateCard(episode, cardId, { thumbnailUrl: persistedThumbUrl });
               }
             } catch (e) {
               console.warn(`[persistThumb] ✗ ${thumbKey}:`, e);
             }
           }
+          await persistVideoProvenance({
+            title: `${episode.toUpperCase()} ${activeLabel} 视频生成`,
+            stage: epState.mode,
+            prompt: finalPrompt || "生成一段自然流畅的视频",
+            videoOutputs: [{ key: videoKey, url: persistedVideoUrl, path: persistedVideoPath, label: activeLabel }],
+            frameOutputs: thumbSrc && thumbKey
+              ? [{ key: thumbKey, url: persistedThumbUrl, path: persistedThumbPath, label: `${activeLabel} 缩略图` }]
+              : [],
+            inputImages: inputImageUrl ? [{ label: "输入图", url: inputImageUrl }] : [],
+            referenceImages: refUrls.map((url, index) => ({ label: `参考图${index + 1}`, url })),
+            endImage: endImageUrl ? { label: "尾帧", url: endImageUrl } : null,
+            context: {
+              cardId,
+              activeLabel,
+              apiTaskId: data.apiTaskId || "",
+              selectedGridLabel: sourceImages[epState.selectedGrid]?.label || "",
+            },
+          });
           // Also persist the input source image as a frame
           if (inputImageUrl) persistVideoFrameToLocal(`input-${episode}-${cardId}`, inputImageUrl);
         } else {
@@ -2004,24 +2147,56 @@ export default function VideoPage() {
         const videoUrl = data.videoUrl || data.video_url || data.video || data.url || "";
         if (videoUrl) {
           stopProgressTimer(newCardId);
-          moduleUpdateCard(episode, newCardId, { status: "ready", progress: 100, videoUrl, thumbnailUrl: data.thumbnailUrl || firstImg });
+          const usedModel = (selectedModel.model || selectedModel.name) || "";
+          moduleUpdateCard(episode, newCardId, { status: "ready", progress: 100, videoUrl, thumbnailUrl: data.thumbnailUrl || firstImg, modelName: usedModel });
           if (!moduleSetAllStates) backgroundResults.push({ ep: episode, label: pair.label, ok: true });
           toast(`${pair.label} 重新生成完成！`, "success");
           const videoKey = `video-${episode}-${newCardId}`;
+          let persistedVideoUrl = videoUrl;
+          let persistedVideoPath = "";
           try {
             const saveRes = await fetch("/api/local-file", {
               method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ category: "videos", key: videoKey, data: videoUrl, type: "video" }),
             });
-            if (saveRes.ok) moduleUpdateCard(episode, newCardId, { videoUrl: `/api/local-file/videos/${videoKey}` });
+            if (saveRes.ok) {
+              const saveData = await saveRes.json();
+              persistedVideoUrl = `/api/local-file/videos/${videoKey}`;
+              persistedVideoPath = saveData.path || "";
+              moduleUpdateCard(episode, newCardId, { videoUrl: persistedVideoUrl });
+            }
           } catch { /* persist failed */ }
           const thumbKey = `thumb-${episode}-${newCardId}`;
+          let persistedThumbUrl = data.thumbnailUrl || firstImg;
+          let persistedThumbPath = "";
           try {
-            await fetch("/api/local-file", {
+            const thumbRes = await fetch("/api/local-file", {
               method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ category: "video-frames", key: thumbKey, data: data.thumbnailUrl || firstImg, type: "image" }),
             });
+            if (thumbRes.ok) {
+              const thumbData = await thumbRes.json();
+              persistedThumbUrl = `/api/local-file/video-frames/${thumbKey}`;
+              persistedThumbPath = thumbData.path || "";
+            }
           } catch { /* ignore */ }
+          await persistVideoProvenance({
+            title: `${episode.toUpperCase()} ${pair.label} 接力重生成`,
+            stage: "relay-regenerate",
+            prompt: pairPrompt,
+            videoOutputs: [{ key: videoKey, url: persistedVideoUrl, path: persistedVideoPath, label: pair.label }],
+            frameOutputs: [{ key: thumbKey, url: persistedThumbUrl, path: persistedThumbPath, label: `${pair.label} 缩略图` }],
+            inputImages: [
+              { label: "起始帧", url: firstImg },
+              { label: "结束帧", url: lastImg },
+            ],
+            endImage: { label: "结束帧", url: lastImg },
+            context: {
+              cardId: newCardId,
+              pairKey,
+              pairLabel: pair.label,
+            },
+          });
         } else {
           stopProgressTimer(newCardId);
           moduleUpdateCard(episode, newCardId, { status: "error", progress: 0, thumbnailUrl: firstImg });
@@ -2046,6 +2221,78 @@ export default function VideoPage() {
       removeTask(taskId);
     }
   };
+
+  const failedVideoCards = useMemo(
+    () => epState.videoCards.filter((card) => card.status === "error"),
+    [epState.videoCards],
+  );
+
+  const videoRecoveryPanelItems = useMemo<WorkflowRecoveryPanelItem[]>(
+    () =>
+      failedVideoCards.map((card) => ({
+        id: card.id,
+        label: `${card.label} 生成失败`,
+        detail: (card.label === "A→B" || card.label === "B→C" || card.label === "C→D")
+          ? "这条接力视频上次没有成功返回结果，可以单独重试这一个接力段。"
+          : `当前模式下的 ${card.label} 没有成功生成，可以按当前配置重新拉起。`,
+        actionLabel: (card.label === "A→B" || card.label === "B→C" || card.label === "C→D") ? "重试接力段" : "按当前配置重试",
+      })),
+    [failedVideoCards],
+  );
+
+  const dismissVideoFailure = useCallback((cardId: string) => {
+    setAllStates((prev) => {
+      const cur = prev[episode];
+      if (!cur) return prev;
+      const nextCards = cur.videoCards.filter((card) => card.id !== cardId);
+      const nextActive = cur.activeCardId === cardId ? (nextCards.at(-1)?.id || "") : cur.activeCardId;
+      return {
+        ...prev,
+        [episode]: {
+          ...cur,
+          videoCards: nextCards,
+          activeCardId: nextActive,
+        },
+      };
+    });
+  }, [episode]);
+
+  const clearAllVideoFailures = useCallback(() => {
+    setAllStates((prev) => {
+      const cur = prev[episode];
+      if (!cur) return prev;
+      const nextCards = cur.videoCards.filter((card) => card.status !== "error");
+      const nextActive = nextCards.some((card) => card.id === cur.activeCardId) ? cur.activeCardId : (nextCards.at(-1)?.id || "");
+      return {
+        ...prev,
+        [episode]: {
+          ...cur,
+          videoCards: nextCards,
+          activeCardId: nextActive,
+        },
+      };
+    });
+  }, [episode]);
+
+  const retryVideoFailure = useCallback(async (cardId: string) => {
+    const card = failedVideoCards.find((item) => item.id === cardId);
+    if (!card) return;
+
+    if (card.label === "A→B") {
+      await handleRegenerateSingleRelay("ab");
+      return;
+    }
+    if (card.label === "B→C") {
+      await handleRegenerateSingleRelay("bc");
+      return;
+    }
+    if (card.label === "C→D") {
+      await handleRegenerateSingleRelay("cd");
+      return;
+    }
+
+    await handleGenerateVideo();
+  }, [failedVideoCards, handleRegenerateSingleRelay, handleGenerateVideo]);
 
   const handlePlayPause = () => {
     const video = videoRef.current;
@@ -3048,26 +3295,26 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
         </div>
 
         {/* EP Selector — EP + 组 选择器 */}
-        <div className="flex items-center justify-between h-9 px-5 border-b border-[var(--border-default)] shrink-0 bg-[#0A0A0A]">
+        <div className="flex items-center justify-between h-9 px-5 border-b border-[var(--border-default)] shrink-0 bg-[var(--surface-contrast-strong)]">
           <button onClick={handleEpPrev} disabled={episodes.indexOf(episode) <= 0}
-            className="w-6 h-6 flex items-center justify-center rounded hover:bg-[#1A1A1A] cursor-pointer disabled:opacity-30 disabled:cursor-default text-[var(--text-secondary)]">
+            className="w-6 h-6 flex items-center justify-center rounded hover:bg-[var(--bg-hover)] cursor-pointer disabled:opacity-30 disabled:cursor-default text-[var(--text-secondary)]">
             <ChevronLeft size={14} />
           </button>
           <div className="flex items-center gap-2">
             <select value={episode} onChange={(e) => handleEpChange(e.target.value)}
               className="bg-transparent text-[12px] font-medium text-[var(--gold-primary)] outline-none cursor-pointer text-center appearance-none">
-              {episodes.map((ep) => <option key={ep} value={ep} className="bg-[#0A0A0A]">{ep.toUpperCase()}</option>)}
+              {episodes.map((ep) => <option key={ep} value={ep} className="bg-[var(--bg-card)]">{ep.toUpperCase()}</option>)}
             </select>
             <span className="text-[10px] text-[var(--text-muted)]">·</span>
             <select value={epState.selectedBeat} onChange={(e) => setEpState({ selectedBeat: Number(e.target.value) })}
               className="bg-transparent text-[11px] text-[var(--text-secondary)] outline-none cursor-pointer appearance-none">
               {Array.from({ length: 9 }, (_, i) => (
-                <option key={i} value={i} className="bg-[#0A0A0A]">组{i + 1}</option>
+                <option key={i} value={i} className="bg-[var(--bg-card)]">组{i + 1}</option>
               ))}
             </select>
           </div>
           <button onClick={handleEpNext} disabled={episodes.indexOf(episode) >= episodes.length - 1}
-            className="w-6 h-6 flex items-center justify-center rounded hover:bg-[#1A1A1A] cursor-pointer disabled:opacity-30 disabled:cursor-default text-[var(--text-secondary)]">
+            className="w-6 h-6 flex items-center justify-center rounded hover:bg-[var(--bg-hover)] cursor-pointer disabled:opacity-30 disabled:cursor-default text-[var(--text-secondary)]">
             <ChevronRight size={14} />
           </button>
         </div>
@@ -3089,6 +3336,24 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
             </button>
           ))}
         </div>
+
+        <div className="px-4 py-3 border-b border-[var(--border-default)]">
+          <WorkflowHandoffChecklist checklist={videoHandoffChecklist} compact />
+        </div>
+
+        {videoRecoveryPanelItems.length > 0 && (
+          <div className="px-4 py-3 border-b border-[var(--border-default)]">
+            <WorkflowRecoveryPanel
+              title="失败项恢复"
+              description="这里会列出当前分集失败的视频卡片，你可以单独重试，或者先把失败项清掉再继续。"
+              items={videoRecoveryPanelItems}
+              onRetry={(id) => { void retryVideoFailure(id); }}
+              onDismiss={dismissVideoFailure}
+              onClearAll={clearAllVideoFailures}
+              compact
+            />
+          </div>
+        )}
 
         {/* ── Source Section ── */}
         <div className="flex flex-col gap-3 px-5 py-4 border-b border-[var(--border-subtle)]">
@@ -3160,7 +3425,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
             </div>
 
             {!isCurrentModelSora ? (
-              <div className="flex flex-col items-center gap-1.5 py-3 bg-[#0D0D0D] border border-[var(--border-default)] rounded">
+              <div className="flex flex-col items-center gap-1.5 py-3 bg-[var(--surface-contrast-strong)] border border-[var(--border-default)] rounded">
                 <span className="text-[10px] text-[var(--text-muted)]">当前模型不支持角色功能</span>
                 <span className="text-[9px] text-[var(--text-muted)]">请在右侧面板选择 Sora 系列模型以使用角色一致性</span>
               </div>
@@ -3186,7 +3451,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                           {char.profilePicture ? (
                             <img src={char.profilePicture} alt={char.username} className="w-10 h-10 rounded-md object-cover border border-purple-500/30 shrink-0" />
                           ) : (
-                            <div className="w-10 h-10 rounded-md bg-[#2A2A2A] flex items-center justify-center text-[14px] text-purple-300/60 border border-purple-500/20 shrink-0">
+                            <div className="w-10 h-10 rounded-md bg-[var(--surface-overlay)] flex items-center justify-center text-[14px] text-purple-300/60 border border-purple-500/20 shrink-0">
                               @
                             </div>
                           )}
@@ -3246,17 +3511,17 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                 <div className="flex flex-col gap-1.5">
                   <div className="flex items-center gap-2">
                     <div className="w-1.5 h-1.5 rounded-full bg-[var(--gold-primary)]" />
-                    <span className="text-[11px] font-medium text-white">首帧 (必选)</span>
+                    <span className="text-[11px] font-medium text-[var(--text-primary)]">首帧 (必选)</span>
                   </div>
                   <div onClick={() => { if (!epState.firstFrameUrl) openImportModal("first"); }}
                     className={`relative flex items-center justify-center h-[100px] rounded cursor-pointer transition ${
-                      epState.firstFrameUrl ? "ring-2 ring-[var(--gold-primary)] bg-[#141414]" : "bg-[#141414] border border-[var(--gold-primary)] border-dashed"
+                      epState.firstFrameUrl ? "ring-2 ring-[var(--gold-primary)] bg-[var(--surface-contrast)]" : "bg-[var(--surface-contrast)] border border-[var(--gold-primary)] border-dashed"
                     }`}>
                     {epState.firstFrameUrl ? (
                       <>
-                        <img src={epState.firstFrameUrl} alt="首帧" className="w-full h-full object-contain bg-[#0A0A0A] rounded" />
+                        <img src={epState.firstFrameUrl} alt="首帧" className="w-full h-full object-contain bg-[var(--bg-card)] rounded" />
                         <button onClick={(e) => { e.stopPropagation(); setZoomUrl(epState.firstFrameUrl); }} className="absolute top-1 left-1 w-5 h-5 flex items-center justify-center rounded bg-[#0A0A0A80] cursor-pointer"><ZoomIn size={10} className="text-[var(--gold-primary)]" /></button>
-                        <button onClick={(e) => { e.stopPropagation(); setEpState({ firstFrameUrl: "" }); }} className="absolute top-1 right-1 w-5 h-5 flex items-center justify-center rounded bg-[#1A1A1A] border border-[#3A3A3A] cursor-pointer"><X size={10} className="text-[var(--text-secondary)]" /></button>
+                        <button onClick={(e) => { e.stopPropagation(); setEpState({ firstFrameUrl: "" }); }} className="absolute top-1 right-1 w-5 h-5 flex items-center justify-center rounded bg-[var(--surface-contrast-strong)] border border-[var(--border-default)] cursor-pointer"><X size={10} className="text-[var(--text-secondary)]" /></button>
                       </>
                     ) : (
                       <div className="flex flex-col items-center gap-1"><ImageIcon size={18} className="text-[var(--gold-primary)]" /><span className="text-[10px] text-[var(--gold-primary)]">点击选择首帧</span></div>
@@ -3271,13 +3536,13 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                   </div>
                   <div onClick={() => { if (!epState.lastFrameUrl) openImportModal("last"); }}
                     className={`relative flex items-center justify-center h-[100px] rounded cursor-pointer transition ${
-                      epState.lastFrameUrl ? "ring-1 ring-[var(--border-default)] bg-[#141414]" : "bg-[#0D0D0D] border border-[var(--border-default)] border-dashed"
+                      epState.lastFrameUrl ? "ring-1 ring-[var(--border-default)] bg-[var(--surface-contrast)]" : "bg-[var(--surface-contrast-strong)] border border-[var(--border-default)] border-dashed"
                     }`}>
                     {epState.lastFrameUrl ? (
                       <>
-                        <img src={epState.lastFrameUrl} alt="尾帧" className="w-full h-full object-contain bg-[#0A0A0A] rounded" />
+                        <img src={epState.lastFrameUrl} alt="尾帧" className="w-full h-full object-contain bg-[var(--bg-card)] rounded" />
                         <button onClick={(e) => { e.stopPropagation(); setZoomUrl(epState.lastFrameUrl); }} className="absolute top-1 left-1 w-5 h-5 flex items-center justify-center rounded bg-[#0A0A0A80] cursor-pointer"><ZoomIn size={10} className="text-[var(--text-secondary)]" /></button>
-                        <button onClick={(e) => { e.stopPropagation(); setEpState({ lastFrameUrl: "" }); }} className="absolute top-1 right-1 w-5 h-5 flex items-center justify-center rounded bg-[#1A1A1A] border border-[#3A3A3A] cursor-pointer"><X size={10} className="text-[var(--text-secondary)]" /></button>
+                        <button onClick={(e) => { e.stopPropagation(); setEpState({ lastFrameUrl: "" }); }} className="absolute top-1 right-1 w-5 h-5 flex items-center justify-center rounded bg-[var(--surface-contrast-strong)] border border-[var(--border-default)] cursor-pointer"><X size={10} className="text-[var(--text-secondary)]" /></button>
                       </>
                     ) : (
                       <div className="flex flex-col items-center gap-1"><Plus size={20} className="text-[var(--text-muted)]" /><span className="text-[10px] text-[var(--text-muted)]">点击选择尾帧或拖拽图片</span></div>
@@ -3436,7 +3701,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                     <div className={`group relative w-full aspect-[3/4] rounded-lg overflow-hidden border-2 transition ${
                       img.url
                         ? "border-[var(--gold-transparent)] cursor-grab active:cursor-grabbing hover:border-[var(--gold-primary)]"
-                        : "border-[var(--border-default)] border-dashed cursor-pointer hover:border-[var(--text-muted)] hover:bg-[#1A1A1A]"
+                        : "border-[var(--border-default)] border-dashed cursor-pointer hover:border-[var(--text-muted)] hover:bg-[var(--bg-hover)]"
                     }`} onClick={() => {
                       if (!img.url) {
                         // 点击空格子 → 触发文件上传
@@ -3469,12 +3734,12 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                             setSourceImages(newSources);
                             deleteGridImageFromDisk(img.key);
                           }}
-                            className="absolute top-1 right-1 w-6 h-6 flex items-center justify-center rounded bg-[#1A1A1A] border border-[#3A3A3A] hover:border-red-400 cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity">
+                            className="absolute top-1 right-1 w-6 h-6 flex items-center justify-center rounded bg-[var(--surface-contrast-strong)] border border-[var(--border-default)] hover:border-red-400 cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity">
                             <X size={11} className="text-[var(--text-secondary)]" />
                           </button>
                         </>
                       ) : (
-                        <div className="w-full h-full flex flex-col items-center justify-center gap-1.5 bg-[#141414]">
+                        <div className="w-full h-full flex flex-col items-center justify-center gap-1.5 bg-[var(--surface-contrast)]">
                           <Plus size={18} className="text-[var(--text-muted)]" />
                           <span className="text-[9px] text-[var(--text-muted)]">点击上传</span>
                         </div>
@@ -3503,7 +3768,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                   { label: "C→D", imgs: [2, 3], key: "cd" },
                 ].map((pair) => (
                   <div key={pair.key} className={`flex items-center gap-2 px-2 py-1 rounded text-[10px] cursor-pointer transition ${
-                    batchRelayActiveTab === pair.key ? "bg-[#C9A96215] border border-[var(--gold-transparent)]" : "border border-transparent hover:bg-[#1A1A1A]"
+                    batchRelayActiveTab === pair.key ? "bg-[#C9A96215] border border-[var(--gold-transparent)]" : "border border-transparent hover:bg-[var(--bg-hover)]"
                   }`} onClick={() => setEpState({ batchRelayActiveTab: pair.key as "ab" | "bc" | "cd" })}>
                     <Link2 size={10} className={batchRelayActiveTab === pair.key ? "text-[var(--gold-primary)]" : "text-[var(--text-muted)]"} />
                     <span className={batchRelayActiveTab === pair.key ? "text-[var(--gold-primary)] font-medium" : "text-[var(--text-tertiary)]"}>{pair.label}</span>
@@ -3571,7 +3836,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                     className={`flex-1 py-1.5 text-[11px] rounded transition cursor-pointer ${
                       isActive
                         ? "bg-[var(--gold-primary)] text-[#0A0A0A] font-medium"
-                        : "bg-[#1A1A1A] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[#222]"
+                        : "bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--surface-overlay)]"
                     }`}>
                     {labels[tab]}
                   </button>
@@ -3581,7 +3846,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
           )}
           <textarea value={currentPrompt} onChange={(e) => setCurrentPrompt(e.target.value)}
             placeholder={epState.mode === "single" ? "从四宫格自动同步场景描述，也可手动编辑..." : epState.mode === "batchRelay" ? `输入${({ ab: "A→B", bc: "B→C", cd: "C→D" } as Record<string, string>)[batchRelayActiveTab]}的接力过渡描述...` : "镜头缓慢推向战士的面部，光影逐渐变化，展现角色内心的觉醒..."}
-            className="w-full h-[100px] bg-[#0D0D0D] border border-[var(--border-default)] rounded px-3 py-2.5 text-[11px] text-[var(--text-tertiary)] leading-relaxed resize-none outline-none focus:border-[var(--gold-primary)] transition placeholder:text-[var(--text-muted)]" />
+            className="w-full h-[100px] bg-[var(--surface-contrast-strong)] border border-[var(--border-default)] rounded px-3 py-2.5 text-[11px] text-[var(--text-tertiary)] leading-relaxed resize-none outline-none focus:border-[var(--gold-primary)] transition placeholder:text-[var(--text-muted)]" />
           {currentBeatDialogues.length > 0 && (
             <div className="flex flex-col gap-1.5">
               <div className="flex items-center gap-1.5">
@@ -3595,12 +3860,12 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
               <div className="flex flex-wrap gap-1.5">
                 {currentBeatDialogues.map((dialogue, index) => (
                   editingDialogueIndex === index ? (
-                    <span key={`${dialogue.role}-${dialogue.text}-${index}`} className="inline-flex items-center gap-1 px-2 py-1 bg-[#1A1A1A] border border-[var(--gold-primary)] rounded text-[10px]">
+                    <span key={`${dialogue.role}-${dialogue.text}-${index}`} className="inline-flex items-center gap-1 px-2 py-1 bg-[var(--surface-contrast)] border border-[var(--gold-primary)] rounded text-[10px]">
                       <input
                         autoFocus
                         value={editingDialogueRole}
                         onChange={(e) => setEditingDialogueRole(e.target.value)}
-                        className="w-[50px] bg-[#0D0D0D] border border-[var(--border-default)] rounded px-1 py-0.5 text-[10px] text-[var(--gold-primary)] font-medium outline-none focus:border-[var(--gold-primary)]"
+                        className="w-[50px] bg-[var(--surface-contrast-strong)] border border-[var(--border-default)] rounded px-1 py-0.5 text-[10px] text-[var(--gold-primary)] font-medium outline-none focus:border-[var(--gold-primary)]"
                         placeholder="角色"
                         onKeyDown={(e) => {
                           if (e.key === "Enter") saveEditedDialogue();
@@ -3614,7 +3879,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                       <input
                         value={editingDialogueText}
                         onChange={(e) => setEditingDialogueText(e.target.value)}
-                        className="w-[160px] bg-[#0D0D0D] border border-[var(--border-default)] rounded px-1 py-0.5 text-[10px] text-[var(--text-tertiary)] outline-none focus:border-[var(--gold-primary)]"
+                        className="w-[160px] bg-[var(--surface-contrast-strong)] border border-[var(--border-default)] rounded px-1 py-0.5 text-[10px] text-[var(--text-tertiary)] outline-none focus:border-[var(--gold-primary)]"
                         placeholder="台词内容"
                         onKeyDown={(e) => {
                           if (e.key === "Enter") saveEditedDialogue();
@@ -3635,7 +3900,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                   ) : (
                     <span
                       key={`${dialogue.role}-${dialogue.text}-${index}`}
-                      className="inline-flex items-center gap-1 px-2 py-1 bg-[#1A1A1A] border border-[var(--border-subtle)] rounded text-[10px] text-[var(--text-tertiary)] max-w-[300px] cursor-pointer hover:border-[var(--gold-primary)] transition"
+                      className="inline-flex items-center gap-1 px-2 py-1 bg-[var(--surface-contrast)] border border-[var(--border-subtle)] rounded text-[10px] text-[var(--text-tertiary)] max-w-[300px] cursor-pointer hover:border-[var(--gold-primary)] transition"
                       title={`点击编辑${[dialogue.emotion, dialogue.strength, dialogue.speed, dialogue.voiceQuality].filter(Boolean).length > 0 ? ` · ${[dialogue.emotion, dialogue.strength, dialogue.speed, dialogue.voiceQuality].filter(Boolean).join(" · ")}` : ""}`}
                       onClick={() => startEditingDialogue(index, dialogue)}
                     >
@@ -3664,7 +3929,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
         <div className="flex flex-col gap-2.5 px-5 py-3 border-b border-[var(--border-subtle)]">
           <span className="text-[12px] font-medium text-[var(--text-secondary)]">视频生成模型</span>
           {videoModels.length === 0 ? (
-            <div className="flex flex-col items-center gap-2 py-4 bg-[#0D0D0D] border border-[var(--border-default)] rounded">
+            <div className="flex flex-col items-center gap-2 py-4 bg-[var(--surface-contrast-strong)] border border-[var(--border-default)] rounded">
               <span className="text-[11px] text-[var(--text-muted)]">未配置视频模型</span>
               <a href="/settings" className="text-[11px] text-[var(--gold-primary)] hover:underline">前往设置页添加模型 →</a>
             </div>
@@ -3673,7 +3938,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
               {/* Model selector */}
               <div className="relative">
                 <button onClick={() => setShowModelDropdown(!showModelDropdown)}
-                  className="flex items-center gap-2.5 w-full h-9 px-3 bg-[#0D0D0D] border border-[var(--border-default)] rounded hover:border-[var(--gold-primary)] transition cursor-pointer">
+                  className="flex items-center gap-2.5 w-full h-9 px-3 bg-[var(--surface-contrast-strong)] border border-[var(--border-default)] rounded hover:border-[var(--gold-primary)] transition cursor-pointer">
                   <div className={`w-1.5 h-1.5 rounded-full ${selectedModel.modes.includes(epState.mode) ? "bg-green-400" : "bg-red-400"}`} />
                   <span className="text-[12px] text-[var(--text-primary)] flex-1 text-left truncate">{selectedModel.name}</span>
                   <span className={`text-[8px] px-1 py-0.5 rounded shrink-0 ${selectedModel.provider === "third-party" ? "bg-blue-500/15 text-blue-400" : "bg-green-500/15 text-green-400"}`}>
@@ -3684,14 +3949,14 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                 {showModelDropdown && (
                   <>
                     <div className="fixed inset-0 z-30" onClick={() => setShowModelDropdown(false)} />
-                    <div className="absolute top-10 left-0 right-0 z-40 bg-[#1A1A1A] border border-[var(--border-default)] rounded shadow-xl max-h-[320px] overflow-auto">
+                    <div className="absolute top-10 left-0 right-0 z-40 bg-[var(--surface-elevated)] border border-[var(--border-default)] rounded shadow-[var(--theme-shadow-card)] max-h-[320px] overflow-auto">
                       {/* 支持当前模式的模型 */}
                       {availableModels.length > 0 && (
                         <>
-                          <div className="px-3 py-1.5 text-[9px] font-medium text-[var(--text-muted)] uppercase tracking-wider bg-[#0A0A0A]">支持当前模式</div>
+                          <div className="px-3 py-1.5 text-[9px] font-medium text-[var(--text-muted)] uppercase tracking-wider bg-[var(--surface-contrast-strong)]">支持当前模式</div>
                           {availableModels.map((m) => (
                             <button key={m.id} onClick={() => { setEpState({ modelId: m.id }); setShowModelDropdown(false); }}
-                              className={`flex items-center gap-2.5 w-full px-3 py-2 hover:bg-[#2A2A2A] cursor-pointer transition ${m.id === epState.modelId ? "bg-[#C9A96210]" : ""}`}>
+                              className={`flex items-center gap-2.5 w-full px-3 py-2 hover:bg-[var(--bg-hover)] cursor-pointer transition ${m.id === epState.modelId ? "bg-[#C9A96210]" : ""}`}>
                               <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
                               <span className="text-[11px] text-[var(--text-primary)] flex-1 text-left">{m.name}</span>
                               <span className="text-[9px] text-[var(--text-muted)]">{m.modes.map(mm => mm === "single" ? "单图" : mm === "firstlast" ? "首尾帧" : mm === "batchRelay" ? "接力" : "多参考").join("/")}</span>
@@ -3703,10 +3968,10 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                       {/* 不支持当前模式的模型 */}
                       {videoModels.filter(m => !m.modes.includes(epState.mode)).length > 0 && (
                         <>
-                          <div className="px-3 py-1.5 text-[9px] font-medium text-[var(--text-muted)] uppercase tracking-wider bg-[#0A0A0A]">其他模型</div>
+                          <div className="px-3 py-1.5 text-[9px] font-medium text-[var(--text-muted)] uppercase tracking-wider bg-[var(--surface-contrast-strong)]">其他模型</div>
                           {videoModels.filter(m => !m.modes.includes(epState.mode)).map((m) => (
                             <button key={m.id} onClick={() => { setEpState({ modelId: m.id }); setShowModelDropdown(false); }}
-                              className={`flex items-center gap-2.5 w-full px-3 py-2 hover:bg-[#2A2A2A] cursor-pointer transition opacity-60 ${m.id === epState.modelId ? "bg-[#C9A96210]" : ""}`}>
+                              className={`flex items-center gap-2.5 w-full px-3 py-2 hover:bg-[var(--bg-hover)] cursor-pointer transition opacity-60 ${m.id === epState.modelId ? "bg-[#C9A96210]" : ""}`}>
                               <div className="w-1.5 h-1.5 rounded-full bg-yellow-500" />
                               <span className="text-[11px] text-[var(--text-primary)] flex-1 text-left">{m.name}</span>
                               <span className="text-[9px] text-[var(--text-muted)]">{m.modes.map(mm => mm === "single" ? "单图" : mm === "firstlast" ? "首尾帧" : mm === "batchRelay" ? "接力" : "多参考").join("/")}</span>
@@ -3748,7 +4013,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
               <span className="text-[10px] text-[var(--text-tertiary)]">时长</span>
               <div className="flex gap-1">
                 <select value={epState.duration} onChange={(e) => setEpState({ duration: e.target.value, durationOverride: "" })} suppressHydrationWarning
-                  className={`flex-1 min-w-0 h-8 bg-[#0D0D0D] border rounded px-2 text-[12px] text-white outline-none focus:border-[var(--gold-primary)] cursor-pointer appearance-none ${epState.durationOverride ? "border-[#333] opacity-50" : "border-[var(--border-default)]"}`}>
+                  className={`flex-1 min-w-0 h-8 bg-[var(--surface-contrast-strong)] border rounded px-2 text-[12px] text-[var(--text-primary)] outline-none focus:border-[var(--gold-primary)] cursor-pointer appearance-none ${epState.durationOverride ? "border-[var(--border-default)] opacity-50" : "border-[var(--border-default)]"}`}>
                   {[3, 4, 5, 6, 8, 10, 15, 20].map((d) => <option key={d} value={String(d)}>{d}秒</option>)}
                 </select>
                 <input
@@ -3756,7 +4021,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                   placeholder="自定义"
                   value={epState.durationOverride || ""}
                   onChange={(e) => setEpState({ durationOverride: e.target.value.replace(/[^\d.]/g, "") })}
-                  className={`w-[52px] h-8 bg-[#0D0D0D] border rounded px-1.5 text-[11px] text-center outline-none ${epState.durationOverride ? "border-[var(--gold-primary)] text-[var(--gold-primary)]" : "border-[var(--border-default)] text-[var(--text-muted)]"}`}
+                  className={`w-[52px] h-8 bg-[var(--surface-contrast-strong)] border rounded px-1.5 text-[11px] text-center outline-none ${epState.durationOverride ? "border-[var(--gold-primary)] text-[var(--gold-primary)]" : "border-[var(--border-default)] text-[var(--text-muted)]"}`}
                 />
               </div>
             </div>
@@ -3764,7 +4029,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
               <span className="text-[10px] text-[var(--text-tertiary)]">比例</span>
               <div className="flex gap-1">
                 <select value={epState.ratio} onChange={(e) => setEpState({ ratio: e.target.value, ratioOverride: "" })} suppressHydrationWarning
-                  className={`flex-1 min-w-0 h-8 bg-[#0D0D0D] border rounded px-2 text-[12px] text-white outline-none focus:border-[var(--gold-primary)] cursor-pointer appearance-none ${epState.ratioOverride ? "border-[#333] opacity-50" : "border-[var(--border-default)]"}`}>
+                  className={`flex-1 min-w-0 h-8 bg-[var(--surface-contrast-strong)] border rounded px-2 text-[12px] text-[var(--text-primary)] outline-none focus:border-[var(--gold-primary)] cursor-pointer appearance-none ${epState.ratioOverride ? "border-[var(--border-default)] opacity-50" : "border-[var(--border-default)]"}`}>
                   {["16:9", "9:16", "1:1", "4:3", "3:4"].map((r) => <option key={r} value={r}>{r}</option>)}
                 </select>
                 <input
@@ -3772,7 +4037,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                   placeholder="自定义"
                   value={epState.ratioOverride || ""}
                   onChange={(e) => setEpState({ ratioOverride: e.target.value })}
-                  className={`w-[52px] h-8 bg-[#0D0D0D] border rounded px-1.5 text-[11px] text-center outline-none ${epState.ratioOverride ? "border-[var(--gold-primary)] text-[var(--gold-primary)]" : "border-[var(--border-default)] text-[var(--text-muted)]"}`}
+                  className={`w-[52px] h-8 bg-[var(--surface-contrast-strong)] border rounded px-1.5 text-[11px] text-center outline-none ${epState.ratioOverride ? "border-[var(--gold-primary)] text-[var(--gold-primary)]" : "border-[var(--border-default)] text-[var(--text-muted)]"}`}
                 />
               </div>
             </div>
@@ -3782,7 +4047,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
               <span className="text-[10px] text-[var(--text-tertiary)]">分辨率</span>
               <div className="flex gap-1">
                 <select value={epState.resolution} onChange={(e) => setEpState({ resolution: e.target.value, resolutionOverride: "" })} suppressHydrationWarning
-                  className={`flex-1 min-w-0 h-8 bg-[#0D0D0D] border rounded px-2 text-[12px] text-white outline-none focus:border-[var(--gold-primary)] cursor-pointer appearance-none ${epState.resolutionOverride ? "border-[#333] opacity-50" : "border-[var(--border-default)]"}`}>
+                  className={`flex-1 min-w-0 h-8 bg-[var(--surface-contrast-strong)] border rounded px-2 text-[12px] text-[var(--text-primary)] outline-none focus:border-[var(--gold-primary)] cursor-pointer appearance-none ${epState.resolutionOverride ? "border-[var(--border-default)] opacity-50" : "border-[var(--border-default)]"}`}>
                   {["480p", "720p", "1080p", "4K"].map((r) => <option key={r} value={r}>{r}</option>)}
                 </select>
                 <input
@@ -3790,7 +4055,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                   placeholder="自定义"
                   value={epState.resolutionOverride || ""}
                   onChange={(e) => setEpState({ resolutionOverride: e.target.value })}
-                  className={`w-[52px] h-8 bg-[#0D0D0D] border rounded px-1.5 text-[11px] text-center outline-none ${epState.resolutionOverride ? "border-[var(--gold-primary)] text-[var(--gold-primary)]" : "border-[var(--border-default)] text-[var(--text-muted)]"}`}
+                  className={`w-[52px] h-8 bg-[var(--surface-contrast-strong)] border rounded px-1.5 text-[11px] text-center outline-none ${epState.resolutionOverride ? "border-[var(--gold-primary)] text-[var(--gold-primary)]" : "border-[var(--border-default)] text-[var(--text-muted)]"}`}
                 />
               </div>
             </div>
@@ -3804,7 +4069,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
               ].filter(Boolean).join("、")}</span>
               <button
                 onClick={() => setEpState({ durationOverride: "", ratioOverride: "", resolutionOverride: "" })}
-                className="text-[9px] text-[var(--text-muted)] hover:text-white cursor-pointer"
+                className="text-[9px] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
               >
                 清除
               </button>
@@ -3817,7 +4082,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
             </div>
             <input type="range" min={0} max={100} step={5} value={epState.motionStrength}
               onChange={(e) => setEpState({ motionStrength: Number(e.target.value) })}
-              className="w-full h-1 rounded appearance-none cursor-pointer accent-[#C9A862] bg-[#1A1A1A] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#C9A862] [&::-webkit-slider-thumb]:shadow-md" />
+              className="w-full h-1 rounded appearance-none cursor-pointer accent-[#C9A862] bg-[var(--surface-overlay)] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#C9A862] [&::-webkit-slider-thumb]:shadow-md" />
             <div className="flex items-center justify-between text-[9px] text-[var(--text-muted)]">
               <span>静止</span>
               <span>适中</span>
@@ -3910,9 +4175,9 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
           const readyCount = pairCards.filter((p) => p.card?.status === "ready").length;
 
           return (
-            <div className="flex-1 flex flex-col bg-[#080808] min-h-0 px-8 py-5 gap-4 overflow-y-auto">
+            <div className="flex-1 flex flex-col bg-[var(--surface-elevated)] min-h-0 px-8 py-5 gap-4 overflow-y-auto">
               {/* Main Video Preview */}
-              <div className="relative w-full max-w-[720px] mx-auto aspect-video bg-[#0E0E0E] rounded-lg overflow-hidden border border-[var(--gold-primary)]">
+              <div className="relative w-full max-w-[720px] mx-auto aspect-video bg-[var(--surface-contrast)] rounded-lg overflow-hidden border border-[var(--gold-primary)] shadow-[var(--theme-shadow-soft)]">
                 {activePairVideoUrl && (
                   <video key={activePair.card!.id} ref={videoRef} src={activePairVideoUrl} className="w-full h-full object-contain" autoPlay
                     muted={isMuted}
@@ -3932,7 +4197,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                     <div className={`w-12 h-12 rounded-full border flex items-center justify-center transition ${
                       isPlaying ? "bg-[#00000060] border-[#ffffff30]" : "bg-[#C9A96230] border-[#C9A96260]"
                     }`}>
-                      {isPlaying ? <Pause size={22} className="text-white" /> : <Play size={22} className="text-[var(--gold-primary)] ml-0.5" />}
+                      {isPlaying ? <Pause size={22} className="text-[var(--text-primary)]" /> : <Play size={22} className="text-[var(--gold-primary)] ml-0.5" />}
                     </div>
                   </div>
                 )}
@@ -3942,7 +4207,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
               <div className="flex items-center justify-between w-full max-w-[720px] mx-auto">
                 <div className="flex items-center gap-1.5">
                   <div className="w-2 h-2 rounded bg-[var(--gold-primary)]" />
-                  <span className="text-[13px] font-medium text-white">{activePair.display}</span>
+                  <span className="text-[13px] font-medium text-[var(--text-primary)]">{activePair.display}</span>
                 </div>
                 <span className="text-[11px] text-[var(--text-muted)]">
                   {activePairStatus === "ready" ? "已完成" : activePairStatus === "generating" ? `生成中 ${activePair.card?.progress || 0}%` : activePairStatus === "error" ? "生成失败" : "等待生成"}
@@ -3950,10 +4215,10 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
               </div>
 
               {/* Playback Controls */}
-              <div className="flex items-center justify-between w-full max-w-[720px] mx-auto h-9 px-2 bg-[#111111] rounded-md">
+              <div className="flex items-center justify-between w-full max-w-[720px] mx-auto h-9 px-2 bg-[var(--surface-contrast-strong)] rounded-md shadow-[var(--theme-shadow-soft)]">
                 <div className="flex items-center gap-3">
                   <button onClick={handlePlayPause} className="cursor-pointer">
-                    {isPlaying ? <Pause size={16} className="text-[#CCCCCC]" /> : <Play size={16} className="text-[#CCCCCC]" />}
+                    {isPlaying ? <Pause size={16} className="text-[var(--text-primary)]" /> : <Play size={16} className="text-[var(--text-primary)]" />}
                   </button>
                   <span className="text-[11px] font-mono text-[var(--text-muted)]">{formatTime(currentTime)} / {formatTime(videoDuration || parseFloat(effectiveDuration))}</span>
                 </div>
@@ -4071,10 +4336,10 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                     </button>
                   )}
                   <button onClick={() => { if (activePairVideoUrl) { const a = document.createElement("a"); a.href = activePairVideoUrl; a.download = `${episode}_${activePair.label}.mp4`; a.click(); } }} className="cursor-pointer">
-                    <Download size={14} className="text-[var(--text-muted)] hover:text-white transition" />
+                    <Download size={14} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition" />
                   </button>
                   <button onClick={() => { setIsMuted((m) => { const next = !m; if (videoRef.current) videoRef.current.muted = next; return next; }); }} className="cursor-pointer">
-                    {isMuted ? <VolumeX size={14} className="text-[var(--text-muted)] hover:text-white transition" /> : <Volume2 size={14} className="text-[var(--gold-primary)] hover:text-white transition" />}
+                    {isMuted ? <VolumeX size={14} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition" /> : <Volume2 size={14} className="text-[var(--gold-primary)] hover:text-[var(--text-primary)] transition" />}
                   </button>
                 </div>
               </div>
@@ -4094,7 +4359,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                       className={`flex-1 flex flex-col rounded-md overflow-hidden border cursor-pointer transition ${
                         isActive ? "border-[var(--gold-primary)]" : "border-[var(--border-default)] hover:border-[var(--text-muted)]"
                       }`}>
-                      <div className="relative h-[110px] bg-[#0E0E0E] flex items-center justify-center">
+                      <div className="relative h-[110px] bg-[var(--surface-contrast)] flex items-center justify-center">
                         {hasThumb ? (
                           <img src={card!.thumbnailUrl!} alt={p.label} className="w-full h-full object-cover" />
                         ) : pairStatus === "generating" ? (
@@ -4110,7 +4375,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                           </div>
                         )}
                       </div>
-                      <div className="flex items-center justify-between h-7 px-2 bg-[#0D0D0D]">
+                      <div className="flex items-center justify-between h-7 px-2 bg-[var(--surface-contrast-strong)]">
                         <span className={`text-[10px] font-medium ${isActive ? "text-[var(--gold-primary)]" : "text-[var(--text-secondary)]"}`}>{p.label}</span>
                         <span className={`text-[9px] ${pairStatus === "ready" ? "text-[var(--gold-primary)]" : pairStatus === "generating" ? "text-[var(--gold-primary)]" : pairStatus === "error" ? "text-red-400" : "text-[var(--text-muted)]"}`}>
                           {pairStatus === "ready" ? "完成" : pairStatus === "generating" ? `${card?.progress || 0}%` : pairStatus === "error" ? "失败" : "待生成"}
@@ -4132,7 +4397,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                       {canRegenerate && (
                         <button
                           onClick={(e) => { e.stopPropagation(); handleRegenerateSingleRelay(p.key); }}
-                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#1A1A1A] border border-[var(--border-default)] hover:border-[var(--gold-primary)] hover:bg-[#C9A96215] transition cursor-pointer group"
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[var(--bg-hover)] border border-[var(--border-default)] hover:border-[var(--gold-primary)] hover:bg-[#C9A96215] transition cursor-pointer group"
                           title={`重新生成 ${p.label}`}
                         >
                           <RefreshCw size={11} className="text-[var(--text-muted)] group-hover:text-[var(--gold-primary)] transition" />
@@ -4147,7 +4412,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
           );
         })() : (
         /* ═══ 缩略图网格视图（单图/首尾帧/多参考） ═══ */
-        <div className="flex-1 flex flex-col bg-[#080808] min-h-0 overflow-y-auto">
+        <div className="flex-1 flex flex-col bg-[var(--surface-elevated)] min-h-0 overflow-y-auto">
           {(() => {
             const visibleCards = epState.videoCards.filter((c) => c.status !== "pending");
             if (visibleCards.length === 0) {
@@ -4177,7 +4442,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                         isActive ? "border-[var(--gold-primary)] ring-1 ring-[var(--gold-primary)]" : "border-[var(--border-default)]"
                       }`}>
                       {/* 缩略图 */}
-                      <div className="relative aspect-video bg-[#0E0E0E] flex items-center justify-center overflow-hidden">
+                      <div className="relative aspect-video bg-[var(--surface-contrast)] flex items-center justify-center overflow-hidden">
                         {card.status === "ready" && card.thumbnailUrl ? (
                           <>
                             <img src={card.thumbnailUrl} alt={card.label} className="w-full h-full object-cover" />
@@ -4189,7 +4454,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                           </>
                         ) : card.status === "ready" && card.videoUrl ? (
                           <>
-                            <div className="w-full h-full bg-[#111]" />
+                            <div className="w-full h-full bg-[var(--surface-contrast)]" />
                             <div className="absolute inset-0 flex items-center justify-center">
                               <div className="w-14 h-14 rounded-full bg-[#C9A96230] border border-[#C9A96260] flex items-center justify-center">
                                 <Play size={24} className="text-[var(--gold-primary)] ml-0.5" />
@@ -4226,7 +4491,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                         )}
                       </div>
                       {/* 底部信息栏 */}
-                      <div className="flex items-center justify-between h-10 px-3 bg-[#0D0D0D]">
+                      <div className="flex items-center justify-between h-10 px-3 bg-[var(--surface-contrast-strong)]">
                         <span className={`text-[13px] font-medium ${isActive ? "text-[var(--gold-primary)]" : "text-[var(--text-secondary)]"}`}>{card.label}</span>
                         <span className={`text-[12px] ${
                           card.status === "ready" ? "text-[var(--gold-primary)]"
@@ -4287,7 +4552,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                       {card?.status === "ready" ? "完成" : card?.status === "generating" ? `${progress}%` : card?.status === "error" ? "失败" : "待生成"}
                     </span>
                   </div>
-                  <div className="h-1.5 rounded bg-[#1A1A1A] overflow-hidden">
+                  <div className="h-1.5 rounded bg-[var(--surface-overlay)] overflow-hidden">
                     <div className={`h-full transition-all ${card?.status === "error" ? "bg-red-400" : "bg-[var(--gold-primary)]"}`} style={{ width: `${progress}%` }} />
                   </div>
                   {idx < 2 && <div className="hidden" />}

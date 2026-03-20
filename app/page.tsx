@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, type ChangeEvent } f
 import { useRouter } from "next/navigation";
 import { useToast } from "./components/Toast";
 import Sidebar from "./components/Sidebar";
+import WorkflowReadinessPanel from "./components/WorkflowReadinessPanel";
 import {
   TrendingUp,
   Film,
@@ -442,6 +443,8 @@ export default function DashboardPage() {
             );
           })}
         </div>
+
+        <WorkflowReadinessPanel context="dashboard" />
 
 
         {/* Archived Projects Section */}

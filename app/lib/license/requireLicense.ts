@@ -1,27 +1,10 @@
 import { NextResponse } from "next/server";
 
-import { getSourceLicenseService, shouldBypassSourceLicense } from "./sourceLicenseService";
-
-const UNLICENSED_MESSAGE = "软件未激活，请先完成授权激活";
+import { requireActivatedSourceLicense } from "./licenseGuard";
 
 export async function requireLicense() {
   try {
-    if (shouldBypassSourceLicense()) {
-      return null;
-    }
-
-    const status = await getSourceLicenseService().getStatus();
-    if (status.activated) {
-      return null;
-    }
-
-    return NextResponse.json(
-      {
-        error: UNLICENSED_MESSAGE,
-        code: "UNLICENSED",
-      },
-      { status: 403 },
-    );
+    return await requireActivatedSourceLicense();
   } catch {
     return NextResponse.json(
       {

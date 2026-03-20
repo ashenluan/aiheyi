@@ -4,9 +4,10 @@ import { useState, useEffect } from "react";
 import { useToast } from "../components/Toast";
 import Sidebar from "../components/Sidebar";
 import CustomPresetLibrary, { type CustomPresetRecord } from "../components/CustomPresetLibrary";
-import { Save, Zap, Image, Video, ExternalLink, Loader, Plus, Trash2, Check, ChevronDown, FolderOpen, Eye, EyeOff, Upload, Shield, Copy, CheckCheck } from "lucide-react";
+import { Save, Zap, Image, Video, ExternalLink, Loader, Plus, Trash2, Check, ChevronDown, FolderOpen, Eye, EyeOff, Upload, Shield, Copy, CheckCheck, Palette } from "lucide-react";
 import { kvLoad, kvSet } from "../lib/kvDB";
 import type { LicenseStatus } from "../lib/license/types";
+import { THEME_CHANGE_EVENT, THEME_SETTING_KEY, UI_THEMES, type UIThemeId, applyThemeToDocument, resolveThemeId } from "../lib/theme";
 
 // ═══════════════════════════════════════════════════════════
 // LLM Presets
@@ -748,6 +749,7 @@ export default function SettingsPage() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved) as Record<string, string>;
+        parsed[THEME_SETTING_KEY] = resolveThemeId(parsed[THEME_SETTING_KEY]);
         if (parsed["llm-preset-id"] && !parsed["llm-url"]) {
           const preset = LLM_PRESETS.find((item) => item.id === parsed["llm-preset-id"]);
           if (preset) parsed["llm-url"] = preset.url;
@@ -764,6 +766,7 @@ export default function SettingsPage() {
         "llm-model": "gemini-2.5-pro",
         "llm-key": "",
         "llm-url": "",
+        [THEME_SETTING_KEY]: resolveThemeId(null),
         [ROLE_UPLOAD_BASE_URL_KEY]: "",
         [ROLE_UPLOAD_API_KEY_KEY]: "",
       };
@@ -830,6 +833,21 @@ export default function SettingsPage() {
   function getValue(key: string) { return values[key] ?? ""; }
   function setValue(key: string, val: string) { setValues((prev) => ({ ...prev, [key]: val })); }
 
+  function handleSelectTheme(themeId: UIThemeId) {
+    const resolved = resolveThemeId(themeId);
+    setValues((prev) => ({ ...prev, [THEME_SETTING_KEY]: resolved }));
+    applyThemeToDocument(resolved);
+    try {
+      const raw = localStorage.getItem("feicai-settings");
+      const persisted = raw ? JSON.parse(raw) as Record<string, string> : {};
+      persisted[THEME_SETTING_KEY] = resolved;
+      localStorage.setItem("feicai-settings", JSON.stringify(persisted));
+      window.dispatchEvent(new CustomEvent(THEME_CHANGE_EVENT, { detail: { themeId: resolved } }));
+    } catch {
+      // Ignore localStorage errors and keep the in-memory preview active.
+    }
+  }
+
   function formatDaysLeft(daysLeft?: number) {
     if (daysLeft === undefined) return "—";
     if (daysLeft < 0 || daysLeft > 36500) return "永久";
@@ -852,6 +870,7 @@ export default function SettingsPage() {
 
   async function handleSave() {
     let finalValues = { ...values };
+    finalValues[THEME_SETTING_KEY] = resolveThemeId(finalValues[THEME_SETTING_KEY]);
 
     // ★ LLM: Key + Model + Provider → 按预设独立保存
     const activePreset = getActiveLLMPreset();
@@ -1113,6 +1132,65 @@ export default function SettingsPage() {
         </div>
 
         <div className="flex flex-col gap-6 w-full">
+          <div className="flex flex-col w-full border border-[var(--border-default)]">
+            <div className="flex items-center justify-between w-full px-6 py-[18px] border-b border-[var(--border-default)]">
+              <div className="flex items-center gap-3">
+                <Palette size={18} className="text-[var(--gold-primary)]" />
+                <span className="text-[15px] font-semibold text-[var(--text-primary)]">界面主题</span>
+                <span className="text-[11px] text-[var(--text-muted)]">点击即预览，保存后长期生效</span>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 p-6">
+              {UI_THEMES.map((theme) => {
+                const active = resolveThemeId(getValue(THEME_SETTING_KEY)) === theme.id;
+                return (
+                  <button
+                    key={theme.id}
+                    type="button"
+                    onClick={() => handleSelectTheme(theme.id)}
+                    className={`flex flex-col gap-4 p-4 border text-left transition cursor-pointer ${
+                      active
+                        ? "border-[var(--gold-primary)] bg-[var(--gold-transparent)]"
+                        : "border-[var(--border-default)] hover:border-[var(--gold-primary)]"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex flex-col gap-1">
+                        <span className={`text-[14px] font-medium ${active ? "text-[var(--gold-primary)]" : "text-[var(--text-primary)]"}`}>
+                          {theme.label}
+                        </span>
+                        <span className="text-[11px] leading-relaxed text-[var(--text-secondary)]">
+                          {theme.description}
+                        </span>
+                      </div>
+                      {active && (
+                        <span className="text-[10px] px-2 py-1 border border-[var(--gold-primary)] text-[var(--gold-primary)] bg-[var(--gold-transparent)]">
+                          当前主题
+                        </span>
+                      )}
+                    </div>
+                    <div
+                      className="h-20 border border-[var(--border-default)] overflow-hidden"
+                      style={{
+                        background: `linear-gradient(135deg, ${theme.preview[0]} 0%, ${theme.preview[1]} 65%, ${theme.preview[2]} 100%)`,
+                      }}
+                    >
+                      <div className="flex h-full items-end gap-2 p-3 bg-black/10">
+                        {theme.preview.map((color, index) => (
+                          <span
+                            key={`${theme.id}-${color}-${index}`}
+                            className="h-4 flex-1 border border-white/10"
+                            style={{ backgroundColor: color }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           {/* ═══ LLM Section with Preset Dropdown ═══ */}
           <div className="flex flex-col w-full border border-[var(--border-default)]">
             <div className="flex items-center justify-between w-full px-6 py-[18px] border-b border-[var(--border-default)]">
@@ -1151,7 +1229,7 @@ export default function SettingsPage() {
                         return (
                           <button key={preset.id}
                             onClick={() => handleSelectLLMPreset(preset)}
-                            className={`flex flex-col gap-0.5 w-full px-3 py-2.5 text-left hover:bg-[#1A1A1A] transition cursor-pointer ${
+                            className={`flex flex-col gap-0.5 w-full px-3 py-2.5 text-left hover:bg-[var(--bg-hover)] transition cursor-pointer ${
                               active ? "bg-[#C9A96210]" : ""
                             }`}>
                             <div className="flex items-center gap-2">
@@ -1174,7 +1252,7 @@ export default function SettingsPage() {
                     <span
                       key={item.label}
                       title={item.desc}
-                      className="text-[10px] px-2 py-1 rounded border border-[var(--border-default)] text-[var(--text-muted)] bg-[#0D0D0D]"
+                      className="text-[10px] px-2 py-1 rounded border border-[var(--border-default)] text-[var(--text-muted)] bg-[var(--surface-contrast-strong)]"
                     >
                       {item.label}
                     </span>
@@ -1253,7 +1331,7 @@ export default function SettingsPage() {
                         return (
                           <button key={preset.id}
                             onClick={() => handleSelectImagePreset(preset)}
-                            className={`flex flex-col gap-0.5 w-full px-3 py-2.5 text-left hover:bg-[#1A1A1A] transition cursor-pointer ${
+                            className={`flex flex-col gap-0.5 w-full px-3 py-2.5 text-left hover:bg-[var(--bg-hover)] transition cursor-pointer ${
                               active ? "bg-[#C9A96210]" : ""
                             }`}>
                             <div className="flex items-center gap-2">
@@ -1276,7 +1354,7 @@ export default function SettingsPage() {
                     <span
                       key={item.label}
                       title={item.desc}
-                      className="text-[10px] px-2 py-1 rounded border border-[var(--border-default)] text-[var(--text-muted)] bg-[#0D0D0D]"
+                      className="text-[10px] px-2 py-1 rounded border border-[var(--border-default)] text-[var(--text-muted)] bg-[var(--surface-contrast-strong)]"
                     >
                       {item.label}
                     </span>
@@ -1362,7 +1440,7 @@ export default function SettingsPage() {
                                   handleLoadVideoPreset(preset);
                                 }
                               }}
-                              className="flex items-center gap-3 w-full px-4 py-3 text-left hover:bg-[#1A1A1A] transition cursor-pointer"
+                              className="flex items-center gap-3 w-full px-4 py-3 text-left hover:bg-[var(--bg-hover)] transition cursor-pointer"
                             >
                               <div className="flex flex-col gap-0.5 flex-1 min-w-0">
                                 <span className="text-[13px] text-[var(--text-primary)]">{preset.label}</span>
@@ -1377,7 +1455,7 @@ export default function SettingsPage() {
                               )}
                             </button>
                             {expandable && expanded && (
-                              <div className="bg-[#080808] border-t border-b border-[var(--border-subtle)]">
+                              <div className="bg-[var(--surface-contrast-strong)] border-t border-b border-[var(--border-subtle)]">
                                 {groupBuiltInVideoModels(builtIns).map(({ group, items }) => (
                                   <div key={`${preset.id}-${group}`}>
                                     <div className="px-4 pt-2.5 pb-1 text-[10px] font-semibold text-[var(--gold-primary)] tracking-wider uppercase">
@@ -1387,7 +1465,7 @@ export default function SettingsPage() {
                                       <button
                                         key={item.model}
                                         onClick={() => handleLoadBuiltInVideoModel(preset, item)}
-                                        className="flex items-center gap-2 w-full px-4 py-2 text-left hover:bg-[#1A1A1A] transition cursor-pointer"
+                                        className="flex items-center gap-2 w-full px-4 py-2 text-left hover:bg-[var(--bg-hover)] transition cursor-pointer"
                                       >
                                         <span className="text-[12px] text-[var(--text-primary)] flex-1 min-w-0 truncate">{item.label}</span>
                                         <span className="text-[9px] text-[var(--text-muted)] shrink-0 font-mono">{item.model}</span>
@@ -1398,7 +1476,7 @@ export default function SettingsPage() {
                                 <div className="border-t border-[var(--border-subtle)]">
                                   <button
                                     onClick={() => handleLoadVideoPreset(preset)}
-                                    className="flex items-center gap-2 w-full px-4 py-2.5 text-left hover:bg-[#1A1A1A] transition cursor-pointer"
+                                    className="flex items-center gap-2 w-full px-4 py-2.5 text-left hover:bg-[var(--bg-hover)] transition cursor-pointer"
                                   >
                                     <Plus size={12} className="text-[var(--text-muted)]" />
                                     <span className="text-[12px] text-[var(--text-secondary)]">自定义模型（手动输入模型ID）</span>
@@ -1430,7 +1508,7 @@ export default function SettingsPage() {
               )}
 
               {videoModels.map((m) => (
-                <div key={m.id} className="flex items-center gap-4 px-6 py-3 border-b border-[var(--border-subtle)] hover:bg-[#0D0D0D] transition">
+                <div key={m.id} className="flex items-center gap-4 px-6 py-3 border-b border-[var(--border-subtle)] hover:bg-[var(--bg-hover)] transition">
                   <div className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
                   <div className="flex flex-col gap-0.5 flex-1 min-w-0">
                     <div className="flex items-center gap-2">
@@ -1466,7 +1544,7 @@ export default function SettingsPage() {
 
               {/* Edit / Add form */}
               {editingModel && (
-                <div className="flex flex-col gap-4 p-6 bg-[#0D0D0D] border-t border-[var(--gold-transparent)]">
+                <div className="flex flex-col gap-4 p-6 bg-[var(--surface-contrast-strong)] border-t border-[var(--gold-transparent)]">
                   <div className="flex items-center gap-2">
                     <span className="text-[13px] font-medium text-[var(--gold-primary)]">
                       {videoModels.some((m) => m.id === editingModel.id) ? "编辑模型" : "添加新模型"}
@@ -1484,11 +1562,11 @@ export default function SettingsPage() {
                       <label className="text-[12px] font-medium text-[var(--text-secondary)]">接入方式</label>
                       <div className="flex items-center h-[42px] rounded border border-[var(--border-default)] overflow-hidden">
                         <button onClick={() => setEditingModel({ ...editingModel, provider: "third-party" })}
-                          className={`flex-1 h-full text-[12px] cursor-pointer transition ${editingModel.provider === "third-party" ? "bg-blue-500/20 text-blue-400 font-medium" : "text-[var(--text-muted)] hover:bg-[#1A1A1A]"}`}>
+                          className={`flex-1 h-full text-[12px] cursor-pointer transition ${editingModel.provider === "third-party" ? "bg-blue-500/20 text-blue-400 font-medium" : "text-[var(--text-muted)] hover:bg-[var(--bg-hover)]"}`}>
                           第三方中转
                         </button>
                         <button onClick={() => setEditingModel({ ...editingModel, provider: "official" })}
-                          className={`flex-1 h-full text-[12px] cursor-pointer transition ${editingModel.provider === "official" ? "bg-green-500/20 text-green-400 font-medium" : "text-[var(--text-muted)] hover:bg-[#1A1A1A]"}`}>
+                          className={`flex-1 h-full text-[12px] cursor-pointer transition ${editingModel.provider === "official" ? "bg-green-500/20 text-green-400 font-medium" : "text-[var(--text-muted)] hover:bg-[var(--bg-hover)]"}`}>
                           官方直连
                         </button>
                       </div>
@@ -1752,7 +1830,7 @@ export default function SettingsPage() {
                     </span>
                     {filePathDefault && (
                       <span className="text-[10px] text-[var(--text-muted)]">
-                        默认路径：<code className="text-[var(--text-secondary)] bg-[#1A1A1A] px-1 rounded font-mono">{filePathDefault}</code>
+                        默认路径：<code className="text-[var(--text-secondary)] bg-[var(--surface-contrast)] px-1 rounded font-mono">{filePathDefault}</code>
                       </span>
                     )}
                   </div>

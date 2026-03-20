@@ -261,8 +261,8 @@ export default function Sidebar() {
                 prefetch={true}
                 className={`group flex items-center gap-4 py-3 px-3 -mx-3 w-[calc(100%+24px)] text-left rounded transition-all duration-200 no-underline ${
                   isActive
-                    ? "bg-[#C9A96212] shadow-[inset_0_0_12px_rgba(201,169,98,0.08)]"
-                    : "hover:bg-[#ffffff08] hover:shadow-[inset_0_0_20px_rgba(201,169,98,0.06)]"
+                    ? "bg-[var(--sidebar-active-bg)] shadow-[var(--sidebar-active-shadow)]"
+                    : "hover:bg-[var(--sidebar-hover-bg)] hover:shadow-[var(--sidebar-hover-shadow)]"
                 }`}
               >
                 <Icon

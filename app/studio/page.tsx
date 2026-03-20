@@ -31,9 +31,13 @@ import ImageFusionModal, { type FusionImageItem } from "../components/ImageFusio
 import ImageSourcePicker from "../components/ImageSourcePicker";
 import JimengFAB from "../components/JimengFAB";
 import JimengPickerModal, { type JimengPickerResult } from "../components/JimengPickerModal";
+import WorkflowHandoffChecklist from "../components/WorkflowHandoffChecklist";
+import WorkflowRecoveryPanel, { type WorkflowRecoveryPanelItem } from "../components/WorkflowRecoveryPanel";
 import { getJimengTaskStore } from "../lib/jimeng-image/clientTaskStore";
 import type { JimengClientTask } from "../lib/jimeng-image/clientTaskStore";
 import { JIMENG_IMAGE_MODEL_OPTIONS, type JimengImageModelId, type JimengImageResolution } from "../lib/jimeng-image/types";
+import { buildPipelineToStudioChecklist } from "../lib/workflowHandoff";
+import { buildOutputEntries, persistProvenanceManifest, summarizeAssetList } from "../lib/provenance/client";
 
 // ═══════════════════════════════════════════════════════════
 // Prompt Parsers
@@ -790,6 +794,29 @@ interface StudioState {
   customGridRefIdsByEp?: Record<string, string[]>;
 }
 
+type StudioRecoveryAction =
+  | "generate-nine"
+  | "generate-smart-nine"
+  | "generate-four"
+  | "regenerate-cell"
+  | "upscale-cell"
+  | "reupscale-cell";
+
+interface StudioRecoveryItem {
+  id: string;
+  episode: string;
+  label: string;
+  detail: string;
+  action: StudioRecoveryAction;
+  cellKey?: string;
+  prompt?: string;
+  refImages?: string[];
+  beatIdx?: number;
+  baseFrameUrl?: string;
+  baseFramePosition?: FourBaseFramePosition;
+  createdAt: number;
+}
+
 function loadStudioState(): Partial<StudioState> {
   if (typeof window === "undefined") return {};
   try {
@@ -871,6 +898,7 @@ const studioCache = {
   regeneratingSet: new Set<string>(),
   upscalingSet: new Set<string>(),
   reUpscaleReadySet: new Set<string>(),
+  failedRecoveryItems: [] as StudioRecoveryItem[],
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -935,6 +963,51 @@ export default function StudioPage() {
     } catch { /* ignore */ }
   }, []);
 
+  useEffect(() => {
+    const syncPipelineContext = () => {
+      try {
+        const activeScriptId = localStorage.getItem("feicai-pipeline-script-id") || "";
+        const chapterRaw = localStorage.getItem("feicai-pipeline-script-chapter") || "";
+        const agentScript = localStorage.getItem("feicai-agent-script-context") || "";
+        const hasChapter = (() => {
+          if (!chapterRaw) return false;
+          try {
+            const parsed = JSON.parse(chapterRaw) as { content?: string };
+            return Boolean(parsed.content && parsed.content.length > 50);
+          } catch {
+            return false;
+          }
+        })();
+        setHasPipelineContext(Boolean(activeScriptId || hasChapter || agentScript.length > 50));
+      } catch {
+        setHasPipelineContext(false);
+      }
+    };
+
+    syncPipelineContext();
+    window.addEventListener("focus", syncPipelineContext);
+    window.addEventListener("storage", syncPipelineContext);
+    return () => {
+      window.removeEventListener("focus", syncPipelineContext);
+      window.removeEventListener("storage", syncPipelineContext);
+    };
+  }, [episode]);
+
+  const recordRecoveryFailure = useCallback((item: StudioRecoveryItem) => {
+    setFailedRecoveryItems((prev) => {
+      const next = [item, ...prev.filter((existing) => existing.id !== item.id)];
+      return next.slice(0, 24);
+    });
+  }, []);
+
+  const dismissRecoveryFailure = useCallback((id: string) => {
+    setFailedRecoveryItems((prev) => prev.filter((item) => item.id !== id));
+  }, []);
+
+  const clearRecoveryFailuresForEpisode = useCallback((ep: string) => {
+    setFailedRecoveryItems((prev) => prev.filter((item) => item.episode !== ep));
+  }, []);
+
   // ★ Pipeline 智能分镜确认方案后自动切换到 smartNine 模式
   useEffect(() => {
     try {
@@ -976,6 +1049,8 @@ export default function StudioPage() {
 
   // Grid Images — 从缓存恢复
   const [gridImages, setGridImages] = useState<Record<string, string>>(studioCache.gridImages);
+  const [hasPipelineContext, setHasPipelineContext] = useState(false);
+  const [failedRecoveryItems, setFailedRecoveryItems] = useState<StudioRecoveryItem[]>(studioCache.failedRecoveryItems);
   // 格子图片历史栈（每个 key 最多保留 5 张历史）
   const [gridImageHistory, setGridImageHistory] = useState<Record<string, string[]>>({});
   const MAX_HISTORY = 5;
@@ -1460,6 +1535,7 @@ export default function StudioPage() {
     studioCache.regeneratingSet = regeneratingSet;
     studioCache.upscalingSet = upscalingSet;
     studioCache.reUpscaleReadySet = reUpscaleReadySet;
+    studioCache.failedRecoveryItems = failedRecoveryItems;
   });
 
   // ── 自定义宫格提示词持久化（debounced KV + 磁盘镜像） ──
@@ -2066,6 +2142,8 @@ export default function StudioPage() {
       studioCache.customPrompts = [];
       studioCache.episode = "";
       studioCache.episodes = [];
+      studioCache.failedRecoveryItems = [];
+      setFailedRecoveryItems([]);
       return;
     }
 
@@ -2244,6 +2322,53 @@ export default function StudioPage() {
   function getSettings(): Record<string, string> {
     try { return JSON.parse(localStorage.getItem("feicai-settings") || "{}"); }
     catch { return {}; }
+  }
+
+  async function persistStudioProvenance(options: {
+    title: string;
+    stage: string;
+    prompt: string;
+    outputs: Array<{ key: string; url?: string; label?: string }>;
+    refImages?: string[];
+    cellPrompts?: string[];
+    beatIdx?: number;
+    cellKey?: string;
+    baseFrameUrl?: string;
+  }) {
+    const settings = getSettings();
+    try {
+      await persistProvenanceManifest({
+        kind: "studio-image",
+        title: options.title,
+        stage: options.stage,
+        episode,
+        prompt: options.prompt,
+        model: {
+          generationMode: imageGenModeRef.current,
+          model: settings["img-model"] || "",
+          baseUrl: settings["img-url"] || "",
+          format: settings["img-format"] || "gemini",
+          resolution: consistency.style.resolution || settings["img-size"] || "1K",
+          aspectRatio: consistency.style.aspectRatio || settings["img-aspect-ratio"] || "16:9",
+        },
+        inputs: {
+          references: summarizeAssetList(options.refImages || []),
+          baseFrame: options.baseFrameUrl
+            ? summarizeAssetList([{ label: "垫图", url: options.baseFrameUrl }])
+            : [],
+        },
+        outputs: buildOutputEntries("grid-images", options.outputs),
+        context: {
+          activeMode,
+          beatIdx: options.beatIdx,
+          cellKey: options.cellKey,
+          promptCount: options.cellPrompts?.length || 0,
+          cellPrompts: options.cellPrompts || [],
+        },
+      });
+    } catch (error) {
+      console.warn("[studio-provenance] failed:", error);
+    }
   }
 
   /** Switch image generation mode and persist to localStorage */
@@ -3736,6 +3861,7 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
         const total = Math.min(ninePrompts.length, 9);
         toast(`即梦逐格生成模式：共 ${total} 格，请耐心等待...`, "info");
         let successCount = 0;
+        const manifestOutputs: Array<{ key: string; url?: string; label?: string }> = [];
         for (let i = 0; i < total; i++) {
           toast(`正在生成九宫格第 ${i + 1}/${total} 格...`, "info");
           const cellPrompt = buildSingleCellPrompt(ninePrompts[i], refImages);
@@ -3750,10 +3876,33 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
             const diskUrlMap = await saveGridImagesToDisk(cellSave);
             setGridImages((prev) => ({ ...prev, ...diskUrlMap }));
             notifyGridOpUpdate({ images: diskUrlMap });
+            manifestOutputs.push({ key, url: diskUrlMap[key], label: `格${i + 1}` });
+            dismissRecoveryFailure(`regen-${cellGridKey}`);
             successCount++;
           } else {
+            recordRecoveryFailure({
+              id: `regen-${cellGridKey}`,
+              episode,
+              label: `九宫格 格${i + 1} 生成失败`,
+              detail: "这格在逐格生成时没有成功返回图片，可以单独重试。",
+              action: "regenerate-cell",
+              cellKey: cellGridKey,
+              prompt: ninePrompts[i],
+              refImages,
+              createdAt: Date.now(),
+            });
             toast(`第 ${i + 1} 格生成失败，跳过`, "error");
           }
+        }
+        if (manifestOutputs.length > 0) {
+          await persistStudioProvenance({
+            title: `${episode.toUpperCase()} 九宫格生成`,
+            stage: "nine-grid",
+            prompt: buildCleanNineGridPrompt(refImages),
+            outputs: manifestOutputs,
+            refImages,
+            cellPrompts: ninePrompts.slice(0, total),
+          });
         }
         toast(`九宫格逐格生成完毕 ✓ 成功 ${successCount}/${total} 格`, "success");
       } else {
@@ -3793,8 +3942,28 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
         const diskUrlMap = await saveGridImagesToDisk(toSave);
         setGridImages((prev) => ({ ...prev, ...diskUrlMap }));
         notifyGridOpUpdate({ images: diskUrlMap });
+        await persistStudioProvenance({
+          title: `${episode.toUpperCase()} 九宫格生成`,
+          stage: "nine-grid",
+          prompt,
+          outputs: [
+            { key: `nine-composite-${episode}`, url: diskUrlMap[`nine-composite-${episode}`], label: "合成图" },
+            ...croppedCells.map((_, i) => ({ key: `nine-${episode}-${i}`, url: diskUrlMap[`nine-${episode}-${i}`], label: `格${i + 1}` })),
+          ],
+          refImages,
+          cellPrompts: ninePrompts.slice(0, 9),
+        });
+        dismissRecoveryFailure(`generate-nine-${episode}`);
       }
     } catch (e: unknown) {
+      recordRecoveryFailure({
+        id: `generate-nine-${episode}`,
+        episode,
+        label: "九宫格整组生成失败",
+        detail: `当前整组九宫格没有成功产出，可直接重新拉起本组生成。${e instanceof Error ? ` 错误：${e.message}` : ""}`,
+        action: "generate-nine",
+        createdAt: Date.now(),
+      });
       toast(`生成错误: ${e instanceof Error ? e.message : "未知"}`, "error");
     } finally {
       generatingLockRef.current.delete(genKey);
@@ -3835,6 +4004,7 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
         const total = Math.min(smartNinePrompts.length, 9);
         toast(`即梦逐格生成模式：共 ${total} 格，请耐心等待...`, "info");
         let successCount = 0;
+        const manifestOutputs: Array<{ key: string; url?: string; label?: string }> = [];
         for (let i = 0; i < total; i++) {
           toast(`正在生成智能分镜九宫格第 ${i + 1}/${total} 格...`, "info");
           const cellPrompt = buildSingleCellPrompt(smartNinePrompts[i], refImages);
@@ -3849,10 +4019,33 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
             const diskUrlMap = await saveGridImagesToDisk(cellSave);
             setGridImages((prev) => ({ ...prev, ...diskUrlMap }));
             notifyGridOpUpdate({ images: diskUrlMap });
+            manifestOutputs.push({ key, url: diskUrlMap[key], label: `格${i + 1}` });
+            dismissRecoveryFailure(`regen-${cellGridKey}`);
             successCount++;
           } else {
+            recordRecoveryFailure({
+              id: `regen-${cellGridKey}`,
+              episode,
+              label: `智能分镜 格${i + 1} 生成失败`,
+              detail: "这格在逐格生成时没有成功返回图片，可以单独重试。",
+              action: "regenerate-cell",
+              cellKey: cellGridKey,
+              prompt: smartNinePrompts[i],
+              refImages,
+              createdAt: Date.now(),
+            });
             toast(`第 ${i + 1} 格生成失败，跳过`, "error");
           }
+        }
+        if (manifestOutputs.length > 0) {
+          await persistStudioProvenance({
+            title: `${episode.toUpperCase()} 智能分镜九宫格生成`,
+            stage: "smart-nine-grid",
+            prompt: buildCleanNineGridPrompt(refImages, smartNinePrompts),
+            outputs: manifestOutputs,
+            refImages,
+            cellPrompts: smartNinePrompts.slice(0, total),
+          });
         }
         toast(`智能分镜九宫格逐格生成完毕 ✓ 成功 ${successCount}/${total} 格`, "success");
       } else {
@@ -3889,8 +4082,28 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
         const diskUrlMap = await saveGridImagesToDisk(toSave);
         setGridImages((prev) => ({ ...prev, ...diskUrlMap }));
         notifyGridOpUpdate({ images: diskUrlMap });
+        await persistStudioProvenance({
+          title: `${episode.toUpperCase()} 智能分镜九宫格生成`,
+          stage: "smart-nine-grid",
+          prompt,
+          outputs: [
+            { key: `smartNine-composite-${episode}`, url: diskUrlMap[`smartNine-composite-${episode}`], label: "合成图" },
+            ...croppedCells.map((_, i) => ({ key: `smartNine-${episode}-${i}`, url: diskUrlMap[`smartNine-${episode}-${i}`], label: `格${i + 1}` })),
+          ],
+          refImages,
+          cellPrompts: smartNinePrompts.slice(0, 9),
+        });
+        dismissRecoveryFailure(`generate-smartNine-${episode}`);
       }
     } catch (e: unknown) {
+      recordRecoveryFailure({
+        id: `generate-smartNine-${episode}`,
+        episode,
+        label: "智能分镜九宫格生成失败",
+        detail: `当前整组智能分镜没有成功产出，可直接重新拉起本组生成。${e instanceof Error ? ` 错误：${e.message}` : ""}`,
+        action: "generate-smart-nine",
+        createdAt: Date.now(),
+      });
       toast(`生成错误: ${e instanceof Error ? e.message : "未知"}`, "error");
     } finally {
       generatingLockRef.current.delete(genKey);
@@ -3973,6 +4186,7 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
         const total = Math.min(scenes.length, 4);
         toast(`即梦逐格生成模式：共 ${total} 格，请耐心等待...`, "info");
         let successCount = 0;
+        const manifestOutputs: Array<{ key: string; url?: string; label?: string }> = [];
         for (let i = 0; i < total; i++) {
           toast(`正在生成四宫格第 ${i + 1}/${total} 格...`, "info");
           const cellPrompt = buildSingleCellPrompt(scenes[i], refImages, !!baseFrameUrl, baseFramePosition);
@@ -3987,10 +4201,38 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
             const diskUrlMap = await saveGridImagesToDisk(cellSave);
             setGridImages((prev) => ({ ...prev, ...diskUrlMap }));
             notifyGridOpUpdate({ images: diskUrlMap });
+            manifestOutputs.push({ key, url: diskUrlMap[key], label: `格${i + 1}` });
+            dismissRecoveryFailure(`regen-${cellGridKey}`);
             successCount++;
           } else {
+            recordRecoveryFailure({
+              id: `regen-${cellGridKey}`,
+              episode,
+              label: `四宫格 第${beatIdx + 1}组 格${i + 1} 生成失败`,
+              detail: "这格在逐格生成时没有成功返回图片，可以单独重试。",
+              action: "regenerate-cell",
+              cellKey: cellGridKey,
+              prompt: scenes[i],
+              refImages,
+              beatIdx,
+              baseFrameUrl,
+              baseFramePosition,
+              createdAt: Date.now(),
+            });
             toast(`第 ${i + 1} 格生成失败，跳过`, "error");
           }
+        }
+        if (manifestOutputs.length > 0) {
+          await persistStudioProvenance({
+            title: `${episode.toUpperCase()} 第${beatIdx + 1}组四宫格生成`,
+            stage: "four-grid",
+            prompt: buildCleanFourGridPrompt(scenes, refImages, baseFramePosition, !!baseFrameUrl),
+            outputs: manifestOutputs,
+            refImages,
+            cellPrompts: scenes.slice(0, total),
+            beatIdx,
+            baseFrameUrl,
+          });
         }
         toast(`四宫格逐格生成完毕 ✓ 成功 ${successCount}/${total} 格`, "success");
       } else {
@@ -4030,8 +4272,31 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
         const diskUrlMap = await saveGridImagesToDisk(toSave);
         setGridImages((prev) => ({ ...prev, ...diskUrlMap }));
         notifyGridOpUpdate({ images: diskUrlMap });
+        await persistStudioProvenance({
+          title: `${episode.toUpperCase()} 第${beatIdx + 1}组四宫格生成`,
+          stage: "four-grid",
+          prompt,
+          outputs: [
+            { key: `four-composite-${episode}-${beatIdx}`, url: diskUrlMap[`four-composite-${episode}-${beatIdx}`], label: "合成图" },
+            ...croppedCells.map((_, i) => ({ key: `four-${episode}-${beatIdx}-${i}`, url: diskUrlMap[`four-${episode}-${beatIdx}-${i}`], label: `格${i + 1}` })),
+          ],
+          refImages,
+          cellPrompts: scenes.slice(0, 4),
+          beatIdx,
+          baseFrameUrl,
+        });
+        dismissRecoveryFailure(`generate-four-${episode}-${beatIdx}`);
       }
     } catch (e: unknown) {
+      recordRecoveryFailure({
+        id: `generate-four-${episode}-${beatIdx}`,
+        episode,
+        label: `四宫格 第${beatIdx + 1}组生成失败`,
+        detail: `当前这一组四宫格没有成功产出，可直接重新拉起本组生成。${e instanceof Error ? ` 错误：${e.message}` : ""}`,
+        action: "generate-four",
+        beatIdx,
+        createdAt: Date.now(),
+      });
       toast(`生成错误: ${e instanceof Error ? e.message : "未知"}`, "error");
     } finally {
       generatingLockRef.current.delete(genKey);
@@ -4071,8 +4336,45 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
         const diskUrlMap = await saveGridImagesToDisk(dataUrlMap);
         setGridImages((prev) => ({ ...prev, ...diskUrlMap }));
         notifyGridOpUpdate({ images: diskUrlMap, reUpscaleReady: cellKey });
+        await persistStudioProvenance({
+          title: `${episode.toUpperCase()} ${cellKey} 重新生成`,
+          stage: "regenerate-cell",
+          prompt: fullPrompt,
+          outputs: [{ key: cellKey, url: diskUrlMap[cellKey], label: cellKey }],
+          refImages,
+          cellKey,
+          baseFrameUrl,
+        });
+        dismissRecoveryFailure(`regen-${cellKey}`);
+      } else {
+        recordRecoveryFailure({
+          id: `regen-${cellKey}`,
+          episode,
+          label: `${cellKey} 重新生成失败`,
+          detail: "这格重新生成没有成功返回图片，可以继续重试。",
+          action: "regenerate-cell",
+          cellKey,
+          prompt,
+          refImages,
+          baseFrameUrl,
+          baseFramePosition,
+          createdAt: Date.now(),
+        });
       }
-    } catch {
+    } catch (e) {
+      recordRecoveryFailure({
+        id: `regen-${cellKey}`,
+        episode,
+        label: `${cellKey} 重新生成失败`,
+        detail: `这格重新生成执行出错，可继续重试。${e instanceof Error ? ` 错误：${e.message}` : ""}`,
+        action: "regenerate-cell",
+        cellKey,
+        prompt,
+        refImages,
+        baseFrameUrl,
+        baseFramePosition,
+        createdAt: Date.now(),
+      });
       toast("重新生成失败", "error");
     } finally {
       generatingLockRef.current.delete(cellKey);
@@ -4144,10 +4446,37 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
         const diskUrlMap = await saveGridImagesToDisk(dataUrlMap);
         setGridImages((prev) => ({ ...prev, ...diskUrlMap }));
         notifyGridOpUpdate({ images: diskUrlMap, reUpscaleReady: cellKey });
+        await persistStudioProvenance({
+          title: `${episode.toUpperCase()} ${cellKey} 超分`,
+          stage: "upscale-cell",
+          prompt: upscalePrompt + ratioHint,
+          outputs: [{ key: cellKey, url: diskUrlMap[cellKey], label: cellKey }],
+          refImages: [cellImage],
+          cellKey,
+        });
+        dismissRecoveryFailure(`upscale-${cellKey}`);
       } else {
+        recordRecoveryFailure({
+          id: `upscale-${cellKey}`,
+          episode,
+          label: `${cellKey} 超分失败`,
+          detail: "这格超分没有成功返回图片，可以继续重试超分。",
+          action: "upscale-cell",
+          cellKey,
+          createdAt: Date.now(),
+        });
         toast("超分失败：模型未返回图片", "error");
       }
-    } catch {
+    } catch (e) {
+      recordRecoveryFailure({
+        id: `upscale-${cellKey}`,
+        episode,
+        label: `${cellKey} 超分失败`,
+        detail: `这格超分执行出错，可继续重试。${e instanceof Error ? ` 错误：${e.message}` : ""}`,
+        action: "upscale-cell",
+        cellKey,
+        createdAt: Date.now(),
+      });
       toast("超分请求错误", "error");
     } finally {
       generatingLockRef.current.delete(cellKey);
@@ -4267,10 +4596,37 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
         const diskUrlMap = await saveGridImagesToDisk(dataUrlMap);
         setGridImages((prev) => ({ ...prev, ...diskUrlMap }));
         notifyGridOpUpdate({ images: diskUrlMap, reUpscaleReady: cellKey });
+        await persistStudioProvenance({
+          title: `${episode.toUpperCase()} ${cellKey} 二次超分`,
+          stage: "reupscale-cell",
+          prompt: refinePrompt,
+          outputs: [{ key: cellKey, url: diskUrlMap[cellKey], label: cellKey }],
+          refImages,
+          cellKey,
+        });
+        dismissRecoveryFailure(`reupscale-${cellKey}`);
       } else {
+        recordRecoveryFailure({
+          id: `reupscale-${cellKey}`,
+          episode,
+          label: `${cellKey} 二次超分失败`,
+          detail: "这格二次超分没有成功返回图片，可以继续重试。",
+          action: "reupscale-cell",
+          cellKey,
+          createdAt: Date.now(),
+        });
         toast("二次超分失败：模型未返回图片", "error");
       }
     } catch (e) {
+      recordRecoveryFailure({
+        id: `reupscale-${cellKey}`,
+        episode,
+        label: `${cellKey} 二次超分失败`,
+        detail: `这格二次超分执行出错，可继续重试。${e instanceof Error ? ` 错误：${e.message}` : ""}`,
+        action: "reupscale-cell",
+        cellKey,
+        createdAt: Date.now(),
+      });
       toast(`二次超分错误: ${e instanceof Error ? e.message : "未知错误"}`, "error");
     } finally {
       generatingLockRef.current.delete(cellKey);
@@ -5777,6 +6133,70 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
   const compositeSmartNine = gridImages[`smartNine-composite-${episode}`];
   const compositeFour = gridImages[`four-composite-${episode}-${fourBeat}`];
   const compositeCustom = gridImages[`custom-composite-${episode}`];
+  const studioHandoffChecklist = useMemo(
+    () =>
+      buildPipelineToStudioChecklist({
+        episode,
+        episodes,
+        hasPipelineContext,
+        ninePromptCount: ninePrompts.filter((prompt) => prompt.trim()).length,
+        smartNinePromptCount: smartNinePrompts.filter((prompt) => prompt.trim()).length,
+        fourGroupReadyCount: fourGroups.filter((group) => group.some((prompt) => prompt.trim())).length,
+        imageGenMode,
+      }),
+    [episode, episodes, hasPipelineContext, ninePrompts, smartNinePrompts, fourGroups, imageGenMode],
+  );
+  const currentRecoveryItems = useMemo(
+    () =>
+      failedRecoveryItems
+        .filter((item) => item.episode === episode)
+        .sort((a, b) => b.createdAt - a.createdAt),
+    [failedRecoveryItems, episode],
+  );
+  const studioRecoveryPanelItems = useMemo<WorkflowRecoveryPanelItem[]>(
+    () =>
+      currentRecoveryItems.map((item) => ({
+        id: item.id,
+        label: item.label,
+        detail: item.detail,
+        actionLabel:
+          item.action === "generate-nine" || item.action === "generate-smart-nine" || item.action === "generate-four"
+            ? "重跑整组"
+            : item.action === "upscale-cell"
+              ? "重试超分"
+              : item.action === "reupscale-cell"
+                ? "重试二次超分"
+                : "重试单格",
+      })),
+    [currentRecoveryItems],
+  );
+  const handleRetryRecoveryItem = useCallback(async (id: string) => {
+    const item = failedRecoveryItems.find((entry) => entry.id === id && entry.episode === episode);
+    if (!item) return;
+    if (item.action === "generate-nine") {
+      await generateNineGrid();
+      return;
+    }
+    if (item.action === "generate-smart-nine") {
+      await generateSmartNineGrid();
+      return;
+    }
+    if (item.action === "generate-four") {
+      await generateFourGrid(item.beatIdx ?? fourBeat);
+      return;
+    }
+    if (item.action === "regenerate-cell" && item.cellKey && item.prompt) {
+      await regenerateCell(item.cellKey, item.prompt, item.refImages || [], item.baseFrameUrl, item.baseFramePosition || "first");
+      return;
+    }
+    if (item.action === "upscale-cell" && item.cellKey) {
+      await upscaleCell(item.cellKey);
+      return;
+    }
+    if (item.action === "reupscale-cell" && item.cellKey) {
+      await reUpscaleCell(item.cellKey);
+    }
+  }, [failedRecoveryItems, episode, generateNineGrid, generateSmartNineGrid, generateFourGrid, fourBeat, regenerateCell, upscaleCell, reUpscaleCell]);
   const isCurrentGenerating = generatingSet.has(
     activeMode === "nine" ? `nine-${episode}` : activeMode === "smartNine" ? `smartNine-${episode}` : activeMode === "custom" ? `custom-${episode}` : `four-${episode}-${fourBeat}`
   );
@@ -5971,6 +6391,23 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
             </div>
           )}
         </div>
+
+        <div className="px-6 py-4 border-b border-[var(--border-default)] bg-[var(--bg-page)]">
+          <WorkflowHandoffChecklist checklist={studioHandoffChecklist} />
+        </div>
+
+        {studioRecoveryPanelItems.length > 0 && (
+          <div className="px-6 py-4 border-b border-[var(--border-default)] bg-[var(--bg-page)]">
+            <WorkflowRecoveryPanel
+              title="失败项恢复"
+              description="这里会列出当前分集最近失败的生成、重绘和超分操作，你可以就地重试，不用回头重新找。"
+              items={studioRecoveryPanelItems}
+              onRetry={(id) => { void handleRetryRecoveryItem(id); }}
+              onDismiss={dismissRecoveryFailure}
+              onClearAll={() => clearRecoveryFailuresForEpisode(episode)}
+            />
+          </div>
+        )}
 
         {/* ── Body ── */}
         <div className="flex flex-1 min-h-0">

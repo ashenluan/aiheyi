@@ -19,6 +19,7 @@ import type {
 import { AGENTS } from "./types";
 import { parseActionsFromReply, ACTION_CATALOG } from "./actions";
 import { DIRECTOR_SYSTEM_PROMPT, buildStoryAgentPrompt, buildShotAgentPrompt, buildImageAgentPrompt } from "./agents";
+import { loadSystemPromptsAsync } from "../consistency";
 
 // ── 生成唯一ID ──
 let _idCounter = 0;
@@ -130,13 +131,29 @@ export function inferAgent(userMessage: string): AgentRole {
 
 // ── 获取智能体的系统提示词 ──
 
-export function getAgentSystemPrompt(agent: AgentRole): string {
+function pickSavedPrompt(saved: Record<string, string> | null, key: string, fallback: string): string {
+  const value = saved?.[key];
+  return typeof value === "string" && value.trim().length > 20 ? value : fallback;
+}
+
+export async function getAgentSystemPrompt(agent: AgentRole): Promise<string> {
+  let saved: Record<string, string> | null = null;
+  try {
+    saved = await loadSystemPromptsAsync();
+  } catch {
+    saved = null;
+  }
+
   switch (agent) {
-    case "story": return buildStoryAgentPrompt();
-    case "shot": return buildShotAgentPrompt();
-    case "image": return buildImageAgentPrompt();
+    case "story":
+      return pickSavedPrompt(saved, "storyAgent", buildStoryAgentPrompt());
+    case "shot":
+      return pickSavedPrompt(saved, "shotAgent", buildShotAgentPrompt());
+    case "image":
+      return pickSavedPrompt(saved, "imageAgent", buildImageAgentPrompt());
     case "director":
-    default: return DIRECTOR_SYSTEM_PROMPT;
+    default:
+      return pickSavedPrompt(saved, "directorAgent", DIRECTOR_SYSTEM_PROMPT);
   }
 }
 
@@ -209,7 +226,7 @@ export async function chat(
   const targetAgent = inferAgent(userMessage);
 
   // 3. 获取对应系统提示词
-  const systemPrompt = getAgentSystemPrompt(targetAgent);
+  const systemPrompt = await getAgentSystemPrompt(targetAgent);
 
   // 4. 调用 LLM
   const { content } = await callLLM(settings, systemPrompt, messages, userMessage, ctx);

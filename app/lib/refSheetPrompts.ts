@@ -97,8 +97,8 @@ export const SCENE_TRIGGER_KEYWORDS = [
   "scene design concept art reference sheet",
   "scene design specification sheet",
   "environment design",
-  "multiple lighting conditions",
-  "multiple viewpoints",
+  "structured 2x3 six-panel layout",
+  "orthographic multi-view environment sheet",
   "labeled panels",
   "single composite image",
 ].join(", ");
@@ -106,11 +106,11 @@ export const SCENE_TRIGGER_KEYWORDS = [
 /** 场景版面布局规则 */
 export const SCENE_LAYOUT_RULES = `### 版面布局规则（★核心★）
 场景规范页面必须在单一图像中包含以下面板：
-  1) 顶部行 = 四个小缩略图（Front View / Side View / Top-Down View / Low-Angle View），各标注英文名称
-  2) 左侧列 = 三个纵向面板，展示不同光照条件（如 "Daytime (Clear)" / "Dusk (Cloudy)" / "Night (Moonlit)"），各标注英文时段天气
-  3) 中央 = 大尺寸主图，展示最关键的光照氛围（故事发生时的时间状态）
-  4) 底部行 = 四个圆形细节特写（场景内关键道具/材质纹理），每个下标注英文材质/元素名称
-  5) 右侧边栏 = 色板色块，分三层：Primary Colors / Secondary Colors / Accent Colors
+  1) 整体必须是 **2×3 六面板** 的结构化布局，六个面板大小均衡、边界清晰、排版整洁
+  2) 上排三格依次为：East View（东向立面）、South View（南向立面）、West View（西向立面）
+  3) 下排三格依次为：North View（北向立面）、Top-Down View（顶视平面）、Detail Close-Up（局部特写）
+  4) 六个面板必须围绕同一场景主体，保证建筑/地形/关键元素前后一致，不允许散乱拼贴
+  5) Detail Close-Up 面板用于展示材质纹理、标志性局部和小型色板注释，可附简洁英文标签
   6) 左上角标题 = 红色粗体 'Scene: {场景名}'`;
 
 /** 场景光照条件推断规则 */
@@ -124,7 +124,7 @@ export const SCENE_LIGHTING_RULES = `### 光照条件推断规则
 export const SCENE_NO_HUMANS_RULE = "场景Prompt必须包含 'no people, no humans, no characters' — 严禁任何人物出现";
 
 /** 场景Prompt结构模板 */
-export const SCENE_PROMPT_TEMPLATE = `'scene design concept art reference sheet, multiple panels on single image, professional page layout, no people, no humans. [场景英文名] — [场景中文名]. [一句话核心描述]. Red bold title: "Scene: [场景中文名]". Top row: four small thumbnails — front view, side view, top-down view, low-angle view, each labeled. Left column: three vertical panels showing different lighting — "Daytime (Clear)", "Dusk (Cloudy)", "Night ([天气])", each labeled. Center: large main image, [核心描述], [关键物件], [光照], [色调], [情绪]. Bottom row: four circular detail close-ups — [细节1], [细节2], [细节3], [细节4], each labeled. Right sidebar: color palette — Primary: [色名1], [色名2], [色名3]; Secondary: [色名1], [色名2], [色名3]; Accent: [色名1], [色名2]. Single composite image, highly detailed, cinematic lighting, 8K, masterpiece, best quality.'`;
+export const SCENE_PROMPT_TEMPLATE = `'scene design concept art reference sheet, structured 2x3 six-panel layout, orthographic multi-view environment sheet, professional page layout, no people, no humans, no characters. [场景英文名] — [场景中文名]. [一句话核心描述]. Red bold title: "Scene: [场景中文名]". Top row panels labeled "East View", "South View", "West View": consistent architectural elevations of the same environment. Bottom row panels labeled "North View", "Top-Down View", "Detail Close-Up": north elevation, plan view, and one close-up panel showing [细节1], [细节2], [细节3] with compact color notes. [核心描述], [关键物件], [主光照], [色调], [氛围], clear panel borders, single composite image, highly detailed, cinematic lighting, 8K, masterpiece, best quality.'`;
 
 // ═══════════════════════════════════════════════════════════
 // 道具（Prop）规格表规则
@@ -161,7 +161,8 @@ export const PROP_PROMPT_TEMPLATE = `'prop design reference, prop design specifi
 
 /** 色板分组规则 — 所有类型通用 */
 export const PALETTE_GROUP_RULES = `### 色板规则
-右侧竖排色彩调色盘，分 Primary (3色) / Secondary (3色) / Accent (2色) 三组，每组有英文标题`;
+色板必须分 Primary (3色) / Secondary (3色) / Accent (2色) 三组，每组有英文标题。
+如果页面本身带右侧边栏，则使用竖排色彩调色盘；如果采用结构化六面板布局，则将色板整合进局部特写/附注面板。`;
 
 // ═══════════════════════════════════════════════════════════
 // 组合构建器 — 按消费者场景组装完整提示词
@@ -289,11 +290,11 @@ export function buildTranslateRefRules(): string {
 1. **总体页面描述**："${SCENE_TRIGGER_KEYWORDS}"
 2. **标题**：左上角红色粗体 "Scene: {场景名}"
 3. **面板布局**：
-   - Top row: 4 thumbnails showing different viewpoints, each labeled ("Front View" / "Side View" / "Top-Down View" / "Low-Angle View")
-   - Left column: 3 lighting condition panels, each labeled (e.g. "Daytime (Overcast)" / "Dusk (Foggy)" / "Night (Moonlit)")
-   - Center: large main environment panorama
-   - Bottom row: 4 circular texture detail close-ups, each labeled (e.g. "Gnarled Bark" / "Mossy Ground" / "Stone Path" / "Dense Canopy")
-   - Right side: vertical color palette organized as Primary / Secondary / Accent with group titles
+   - Use a clean 2×3 six-panel sheet, not scattered thumbnails
+   - Top row: "East View" / "South View" / "West View"
+   - Bottom row: "North View" / "Top-Down View" / "Detail Close-Up"
+   - All six panels must depict the same environment consistently
+   - The Detail Close-Up panel can include local textures, small props, and a compact color note strip
 
 #### C. 道具类型 — Prop Design Specification Sheet
 1. **总体页面描述**："${PROP_TRIGGER_KEYWORDS}"
@@ -353,7 +354,8 @@ ${SCENE_LAYOUT_RULES}
 
 ### Prompt 触发关键词组合（★最重要★）
   - 'scene design concept art reference sheet' — 触发场景规范图模式
-  - 'multiple panels on single image' — 触发多面板布局
+  - 'structured 2x3 six-panel layout' — 强制触发六面板结构化布局
+  - 'orthographic multi-view environment sheet' — 强化多角度规格表语义
   - 'professional page layout' — 触发专业板式排版
   - 'single composite image' — 防止模型生成多张独立图片
   - 'no people, no humans' — 场景严禁出现人物
@@ -365,6 +367,7 @@ ${SCENE_LIGHTING_RULES}
   - Primary（3个）：最大面积色调（建筑主体/地面/天空）
   - Secondary（3个）：次要面积（木质/阴影/雾气）
   - Accent（2个）：点睛色（灯火/特殊光源/植物）
+  - 色板不再单独占据侧边栏，而是融合到 Detail Close-Up 面板中的小型色块说明
 
 ### 字段说明
 - description：**英文 prompt 的完整中文翻译版**，必须包含全部面板布局、色板信息、光照条件、质感标记词的中文翻译。与 prompt 逐句对应，不得省略。

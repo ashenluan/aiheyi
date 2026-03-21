@@ -101,8 +101,11 @@ export default function GeminiTabPage() {
   const [status, setStatus] = useState<BrowserStatus | null>(null);
   const [loading, setLoading] = useState<string | null>(null); // "launch" | "close" | "check" | "status" | "start-service"
   const [serviceReachable, setServiceReachable] = useState<boolean | null>(null);
+  const [serviceStartupHint, setServiceStartupHint] = useState<string | null>(null);
   // 用于检测服务从不可达→可达的变化，自动重同步用户配置
   const prevReachableRef = useRef<boolean | null>(null);
+  const startingServiceRef = useRef<Promise<boolean> | null>(null);
+  const serviceStartupUntilRef = useRef(0);
 
   // Logs
   const [logs, setLogs] = useState<{ level: string; message: string; timestamp: number }[]>([]);
@@ -167,6 +170,8 @@ export default function GeminiTabPage() {
         const wasReachable = prevReachableRef.current;
         prevReachableRef.current = true;
         setServiceReachable(true);
+        setServiceStartupHint(null);
+        serviceStartupUntilRef.current = 0;
         const saved = loadGeminiTabSettings();
 
         // ★ 不再从后端反向覆盖 gemUrl/proxyServer/extensionPaths
@@ -252,13 +257,25 @@ export default function GeminiTabPage() {
    * @returns true 如果服务已可用
    */
   async function ensureServiceRunning(): Promise<boolean> {
+    if (startingServiceRef.current) {
+      return startingServiceRef.current;
+    }
+
+    if (serviceStartupUntilRef.current > Date.now()) {
+      toast(serviceStartupHint || "Gemini Tab 服务仍在启动中，请稍后再试", "info");
+      return false;
+    }
+
+    const startPromise = (async () => {
     const alreadyReady = await waitForServiceReady(1, 0);
     if (alreadyReady) {
+      setServiceStartupHint(null);
       return true;
     }
 
     // 服务未运行，尝试自动启动
     setLoading("start-service");
+    setServiceStartupHint("Gemini Tab 服务启动中，首次启动或编译可能需要约 30 秒。");
     try {
       const res = await fetch("/api/gemini-tab/start-service", {
         method: "POST",
@@ -267,23 +284,38 @@ export default function GeminiTabPage() {
       });
       const data = await res.json();
       if (data.success) {
+        setServiceStartupHint(null);
         toast(data.message, "success");
         const ready = await waitForServiceReady(data.alreadyRunning ? 4 : 12, data.alreadyRunning ? 500 : 800);
         if (!ready) {
           toast(data.warning || "Gemini Tab 服务已启动，但尚未就绪，请稍后重试", "info");
         }
         return ready;
+      } else if (data.partial) {
+        const retryAfterMs = typeof data.retryAfterMs === "number" ? data.retryAfterMs : 30000;
+        serviceStartupUntilRef.current = Date.now() + retryAfterMs;
+        setServiceStartupHint(data.message || "Gemini Tab 服务仍在初始化中，请稍后再检查连接状态");
+        toast(data.warning || data.message || "Gemini Tab 服务仍在初始化中，请稍后再试", "info");
+        return false;
       } else {
+        setServiceStartupHint(null);
         toast(data.error || "启动 Gemini Tab 服务失败", "error");
         return false;
       }
     } catch (e) {
+      setServiceStartupHint(null);
       toast(`无法自动启动服务: ${e instanceof Error ? e.message : String(e)}`, "error");
       return false;
     } finally {
-      // 注意: 如果是 handleLaunch 调用的，loading 会被覆盖为 "launch"
-      if (loading === "start-service") setLoading(null);
+      setLoading(null);
     }
+    })();
+
+    startingServiceRef.current = startPromise.finally(() => {
+      startingServiceRef.current = null;
+    });
+
+    return startingServiceRef.current;
   }
 
   /** 手动启动 Gemini Tab 服务（服务连接区按钮） */
@@ -616,6 +648,11 @@ export default function GeminiTabPage() {
                   无法连接 Gemini Tab 服务
                 </span>
               )}
+              {serviceReachable === false && serviceStartupHint && (
+                <span className="text-[11px] text-amber-400 ml-2">
+                  {serviceStartupHint}
+                </span>
+              )}
               {serviceReachable === false && (
                 <button
                   onClick={handleStartService}
@@ -623,7 +660,7 @@ export default function GeminiTabPage() {
                   className="ml-auto flex items-center gap-1.5 px-3 py-1.5 bg-[var(--gold-primary)] text-[11px] font-medium text-[#0A0A0A] hover:brightness-110 transition cursor-pointer disabled:opacity-40"
                 >
                   {loading === "start-service" ? <Loader size={12} className="animate-spin" /> : <Rocket size={12} />}
-                  {loading === "start-service" ? "启动中..." : "启动服务"}
+                  {loading === "start-service" ? "启动中..." : serviceStartupHint ? "服务启动中" : "启动服务"}
                 </button>
               )}
             </div>
@@ -644,6 +681,11 @@ export default function GeminiTabPage() {
                   <span className="block">如连接失败请确认：① 已运行 <span className="font-mono text-[var(--text-secondary)]">GeminiTab.exe</span> 或 <span className="font-mono text-[var(--text-secondary)]">npm run dev</span> 启动服务 ② 端口未被占用。</span>
                   <span className="block text-[var(--text-muted)]">远程部署时修改为服务端 IP + 端口，如 <span className="font-mono">http://192.168.1.100:3099</span></span>
                 </p>
+                {serviceStartupHint && (
+                  <p className="text-[11px] text-amber-400 mt-1">
+                    {serviceStartupHint}
+                  </p>
+                )}
               </div>
 
               {/* Gem URL */}

@@ -53,15 +53,10 @@ const PROMPT_ITEMS: PromptItem[] = [
   { key: "seedanceFirstFrame", label: "Seedance 首帧参考", description: "Seedance 2.0 首帧参考模式 AI 提示词生成（从首帧画面展开动态内容）", category: "video" },
   { key: "dialogueEmotion", label: "台词情绪分析", description: "从小说文本中提取角色台词并标注情绪和强度（音谷配音用）", category: "video" },
   // ── AI 导演智能体（可编辑，修改后影响 AI 导演工作台行为）──
+  { key: "directorAgent", label: "★ 导演编排器", description: "AI导演系统·导演编排器提示词（意图解析、任务调度、子智能体编排）", category: "agent" },
   { key: "storyAgent", label: "★ 故事策划师", description: "AI导演系统·故事策划师提示词（剧本分析、节拍拆解、一致性管理）", category: "agent" },
   { key: "shotAgent", label: "★ 分镜师Agent", description: "AI导演系统·分镜师提示词（镜头设计、提示词编写、翻译与运镜）", category: "agent" },
   { key: "imageAgent", label: "★ 画面师Agent", description: "AI导演系统·画面师提示词（图片生成、超分、风格分析、通道管理）", category: "agent" },
-  // ── Agent 参考文档（仅供参考，编辑不影响功能）──
-  { key: "methodology", label: "分镜方法论", description: "影视分镜方法论手册（分镜师和导演共用）", category: "agent", readonly: true },
-  { key: "geminiGuide", label: "Gemini生图指南", description: "Gemini原生图像生成的提示词最佳实践", category: "agent", readonly: true },
-  { key: "director", label: "导演Agent (旧)", description: "旧版导演Agent配置（负责审核分镜）", category: "agent", readonly: true },
-  { key: "storyboardArtist", label: "分镜师Agent (旧)", description: "旧版分镜师Agent配置（负责生成分镜提示词）", category: "agent", readonly: true },
-  { key: "producer", label: "制片人Agent (CLAUDE.md)", description: "主Agent配置（负责流程调度）", category: "agent", readonly: true },
 ];
 
 export default function PromptsPage() {

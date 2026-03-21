@@ -1,15 +1,15 @@
 import { NextResponse } from "next/server";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { SINGLE_PASS_EXTRACT_PROMPT } from "@/app/api/extract/route";
-import { BEAT_BREAKDOWN_PROMPT } from "@/app/api/pipeline/run/route";
-import { ANALYZE_SCRIPT_PROMPT } from "@/app/api/analyze-script/route";
-import { SEEDANCE_OMNI_PROMPT, SEEDANCE_FIRST_FRAME_PROMPT, SEEDANCE_SIMPLE_PROMPT } from "@/app/api/seedance/ai-prompt/route";
+import { SINGLE_PASS_EXTRACT_PROMPT } from "@/app/lib/extractPrompts";
+import { BEAT_BREAKDOWN_PROMPT } from "@/app/lib/beatBreakdownPrompt";
+import { ANALYZE_SCRIPT_PROMPT } from "@/app/lib/analyzeScriptPrompt";
+import { SEEDANCE_OMNI_PROMPT, SEEDANCE_FIRST_FRAME_PROMPT, SEEDANCE_SIMPLE_PROMPT } from "@/app/lib/seedancePrompts";
 import { DIALOGUE_EMOTION_PROMPT, TRANSLATE_PROMPT, TRANSLATE_GRID_PROMPT, CONTINUOUS_ACTION_PROMPT } from "@/app/lib/defaultPrompts";
 import { resolveProjectRoot } from "@/app/lib/runtimePaths";
 import {
   STYLE_ANALYZE_PROMPT, UPSCALE_PROMPT,
-  STORY_AGENT_DEFAULT_PROMPT, SHOT_AGENT_DEFAULT_PROMPT, IMAGE_AGENT_DEFAULT_PROMPT,
+  DIRECTOR_SYSTEM_PROMPT, STORY_AGENT_DEFAULT_PROMPT, SHOT_AGENT_DEFAULT_PROMPT, IMAGE_AGENT_DEFAULT_PROMPT,
 } from "@/app/lib/defaultPrompts";
 import { requireLicense } from "@/app/lib/license/requireLicense";
 
@@ -129,6 +129,7 @@ export async function GET() {
     translateGridPrompt: TRANSLATE_GRID_PROMPT,
     continuousAction: CONTINUOUS_ACTION_PROMPT,
     // ── AI 导演系统智能体提示词 ──
+    directorAgent: DIRECTOR_SYSTEM_PROMPT,
     storyAgent: STORY_AGENT_DEFAULT_PROMPT,
     shotAgent: SHOT_AGENT_DEFAULT_PROMPT,
     imageAgent: IMAGE_AGENT_DEFAULT_PROMPT,

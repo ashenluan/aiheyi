@@ -187,14 +187,17 @@ export async function POST(req: Request) {
       }
     }
 
-    // 超时但进程已启动，可能还在初始化
+    // 超时但进程已启动，可能还在初始化。
+    // V2.04+ 约定：这里不能返回 success:true，否则前端会误以为已可用。
     return NextResponse.json({
-      success: true,
-      message: `Gemini Tab 服务已启动，但尚未就绪，请稍后重试`,
+      success: false,
+      partial: true,
+      message: `Gemini Tab 服务进程已启动，但 30s 内尚未就绪`,
       alreadyRunning: false,
       startedFrom: found.type,
       path: found.dir,
-      warning: "服务启动时间较长，请等待几秒后重试连接",
+      warning: "服务仍在初始化中，请等待约 30 秒后再检查连接状态",
+      retryAfterMs: maxWait,
     });
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : String(e);

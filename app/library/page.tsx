@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import Sidebar from "../components/Sidebar";
 import type { ConsistencyProfile, CharacterRef, SceneRef, PropRef } from "../lib/consistency";
-import { loadConsistencyAsync, saveConsistency, restoreConsistencyImagesFromDisk, isValidImageRef } from "../lib/consistency";
+import { deriveCharacterGrouping, loadConsistencyAsync, saveConsistency, restoreConsistencyImagesFromDisk, isValidImageRef } from "../lib/consistency";
 import { loadProjects, saveProjects, persistProjectToDisk, type ArchivedProject } from "../lib/projects";
 import { isSoraModel, type SoraCharacter, type SoraCharCategory } from "../lib/zhenzhen/types";
 
@@ -33,10 +33,21 @@ interface DisplayItem {
   aliases?: string[];
   prompt?: string;
   referenceImage?: string;
+  groupId?: string;
+  groupBase?: string;
+  subType?: string;
   /** 来源标识 */
   source: "current" | string; // "current" 或归档项目 ID
   sourceName: string;
   type: TabKey;
+}
+
+interface CharacterGroupView {
+  key: string;
+  groupBase: string;
+  source: "current" | string;
+  sourceName: string;
+  items: DisplayItem[];
 }
 
 const TABS: { key: TabKey; label: string; icon: typeof User }[] = [
@@ -155,6 +166,17 @@ function resolveSoraUploadConfig(): SoraUploadConfig | null {
 // ─── nano-id 替代 ───
 function nanoId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function sortCharacterStates(items: DisplayItem[]): DisplayItem[] {
+  return [...items].sort((a, b) => {
+    const aRank = a.subType ? 1 : 0;
+    const bRank = b.subType ? 1 : 0;
+    if (aRank !== bRank) return aRank - bRank;
+    const bySubType = (a.subType || "").localeCompare(b.subType || "", "zh-CN");
+    if (bySubType !== 0) return bySubType;
+    return a.name.localeCompare(b.name, "zh-CN");
+  });
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -319,6 +341,7 @@ export default function LibraryPage() {
   const [batchUploadRunning, setBatchUploadRunning] = useState(false);
   const [batchUploadTasks, setBatchUploadTasks] = useState<BatchUploadTask[]>([]);
   const [showBatchUploadModal, setShowBatchUploadModal] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
 
   // ── 归档项目图片缓存 ──
   // archiveDiskImages: 磁盘 serve URL（初始化时一次性批量检查）
@@ -528,6 +551,64 @@ export default function LibraryPage() {
     return items;
   }, [allItems, activeTab, sourceFilter, searchQuery]);
 
+  const characterGroupedView = useMemo(() => {
+    if (activeTab !== "characters") {
+      return { groups: [] as CharacterGroupView[], ungrouped: filteredItems };
+    }
+
+    const grouped = new Map<string, CharacterGroupView>();
+    const ungrouped: DisplayItem[] = [];
+
+    for (const item of filteredItems) {
+      const derived = deriveCharacterGrouping(item.name);
+      const groupId = item.groupId || derived.groupId;
+      const groupBase = item.groupBase || derived.groupBase;
+      const subType = item.subType || derived.subType;
+      const normalizedItem = (groupId || groupBase || subType)
+        ? { ...item, groupId, groupBase, subType }
+        : item;
+
+      if (!groupId && !groupBase) {
+        ungrouped.push(normalizedItem);
+        continue;
+      }
+
+      const bucketKey = `${normalizedItem.source}::${groupId || groupBase}`;
+      const bucket = grouped.get(bucketKey) || {
+        key: bucketKey,
+        groupBase: groupBase || normalizedItem.name,
+        source: normalizedItem.source,
+        sourceName: normalizedItem.sourceName,
+        items: [],
+      };
+      bucket.items.push(normalizedItem);
+      grouped.set(bucketKey, bucket);
+    }
+
+    const groups: CharacterGroupView[] = [];
+    for (const bucket of grouped.values()) {
+      const sortedItems = sortCharacterStates(bucket.items);
+      const shouldGroup = sortedItems.length > 1 || sortedItems.some((item) => item.subType);
+      if (!shouldGroup) {
+        ungrouped.push(...sortedItems);
+        continue;
+      }
+      groups.push({ ...bucket, items: sortedItems });
+    }
+
+    groups.sort((a, b) => {
+      if (a.source === b.source) return a.groupBase.localeCompare(b.groupBase, "zh-CN");
+      if (a.source === "current") return -1;
+      if (b.source === "current") return 1;
+      return a.sourceName.localeCompare(b.sourceName, "zh-CN");
+    });
+
+    return {
+      groups,
+      ungrouped: sortCharacterStates(ungrouped),
+    };
+  }, [activeTab, filteredItems]);
+
   // ── 统计 ──
   const stats = useMemo(() => {
     const current = { characters: 0, scenes: 0, props: 0 };
@@ -565,6 +646,10 @@ export default function LibraryPage() {
       ),
     [filteredItems]
   );
+
+  const toggleCharacterGroup = useCallback((groupKey: string) => {
+    setCollapsedGroups((prev) => ({ ...prev, [groupKey]: !prev[groupKey] }));
+  }, []);
 
   const getSoraUploadRecord = useCallback(
     (itemId: string) => soraUploads.find((item) => item.itemId === itemId && item.platform === "贞贞工坊"),
@@ -686,6 +771,7 @@ export default function LibraryPage() {
       prompt: addForm.prompt.trim(),
       referenceImage: imgRef,
       aliases: [],
+      ...(activeTab === "characters" ? deriveCharacterGrouping(addForm.name.trim()) : {}),
     };
 
     const updated = { ...consistency };
@@ -800,6 +886,9 @@ export default function LibraryPage() {
 
   const handleEditSave = useCallback(async () => {
     if (!editingItem || !editForm.name.trim()) return;
+    const nextCharacterGrouping = editingItem.type === "characters"
+      ? deriveCharacterGrouping(editForm.name.trim())
+      : null;
 
     // ★ 先保存图片到磁盘
     let imgRef = editImageFile;
@@ -831,7 +920,20 @@ export default function LibraryPage() {
       const updated = { ...consistency };
       updated[editingItem.type] = updated[editingItem.type].map((i: CharacterRef & SceneRef & PropRef) => {
         if (i.id !== editingItem.id) return i;
-        return { ...i, name: editForm.name.trim(), description: editForm.description.trim(), prompt: editForm.prompt.trim(), referenceImage: imgRef };
+        return {
+          ...i,
+          name: editForm.name.trim(),
+          description: editForm.description.trim(),
+          prompt: editForm.prompt.trim(),
+          referenceImage: imgRef,
+          ...(editingItem.type === "characters"
+            ? {
+                groupId: nextCharacterGrouping?.groupId,
+                groupBase: nextCharacterGrouping?.groupBase,
+                subType: nextCharacterGrouping?.subType,
+              }
+            : {}),
+        };
       });
       await persistConsistency(updated);
     } else {
@@ -842,9 +944,22 @@ export default function LibraryPage() {
         if (proj?.consistency) {
           const listKey = editingItem.type as keyof Pick<ConsistencyProfile, "characters" | "scenes" | "props">;
           proj.consistency[listKey] = (proj.consistency[listKey] || []).map(
-            (i: { id: string; name?: string; description?: string; prompt?: string; referenceImage?: string }) => {
+            (i: { id: string; name?: string; description?: string; prompt?: string; referenceImage?: string; groupId?: string; groupBase?: string; subType?: string }) => {
               if (i.id !== editingItem.id) return i;
-              return { ...i, name: editForm.name.trim(), description: editForm.description.trim(), prompt: editForm.prompt.trim(), referenceImage: imgRef };
+              return {
+                ...i,
+                name: editForm.name.trim(),
+                description: editForm.description.trim(),
+                prompt: editForm.prompt.trim(),
+                referenceImage: imgRef,
+                ...(editingItem.type === "characters"
+                  ? {
+                      groupId: nextCharacterGrouping?.groupId,
+                      groupBase: nextCharacterGrouping?.groupBase,
+                      subType: nextCharacterGrouping?.subType,
+                    }
+                  : {}),
+              };
             }
           ) as typeof proj.consistency[typeof listKey];
           await saveProjects(projects);
@@ -923,6 +1038,7 @@ export default function LibraryPage() {
           prompt: "",
           referenceImage: imgRef,
           aliases: [],
+          ...(activeTab === "characters" ? deriveCharacterGrouping(name) : {}),
         });
       }
 
@@ -940,6 +1056,10 @@ export default function LibraryPage() {
   const handleMoveItem = useCallback(async (item: DisplayItem, targetTab: TabKey) => {
     if (item.type === targetTab) return;
 
+    const nextCharacterGrouping = targetTab === "characters"
+      ? deriveCharacterGrouping(item.name)
+      : null;
+
     const movedItem = {
       id: item.id,
       name: item.name,
@@ -947,6 +1067,13 @@ export default function LibraryPage() {
       prompt: item.prompt || "",
       referenceImage: item.referenceImage,
       aliases: item.aliases || [],
+      ...(targetTab === "characters"
+        ? {
+            groupId: nextCharacterGrouping?.groupId,
+            groupBase: nextCharacterGrouping?.groupBase,
+            subType: nextCharacterGrouping?.subType,
+          }
+        : {}),
     } as CharacterRef & SceneRef & PropRef;
 
     if (item.source === "current") {
@@ -1056,6 +1183,202 @@ export default function LibraryPage() {
 
     setBatchUploadRunning(false);
   }, [createSoraCharacter, currentUploadCandidates, persistSoraUpload, tabLabel]);
+
+  const renderItemCard = useCallback((item: DisplayItem) => {
+    const isCurrent = item.source === "current";
+    const itemKey = `${item.source}-${item.id}`;
+    const isSelected = selectedIds.has(itemKey);
+
+    return (
+      <div
+        key={itemKey}
+        onClick={multiSelectMode ? () => {
+          setSelectedIds(prev => {
+            const next = new Set(prev);
+            if (next.has(itemKey)) next.delete(itemKey); else next.add(itemKey);
+            return next;
+          });
+        } : undefined}
+        className={`flex flex-col rounded-lg overflow-hidden border bg-[#171717] transition group ${
+          multiSelectMode ? "cursor-pointer" : ""
+        } ${
+          isSelected
+            ? "border-[var(--gold-primary)] ring-1 ring-[var(--gold-primary)]"
+            : "border-[var(--border-default)] hover:border-[var(--text-muted)]"
+        }`}
+      >
+        <div className="relative w-full aspect-square bg-[#111]">
+          {multiSelectMode && (
+            <div className={`absolute top-2 left-2 z-10 flex items-center justify-center w-6 h-6 rounded border-2 transition ${
+              isSelected
+                ? "bg-[var(--gold-primary)] border-[var(--gold-primary)] text-[#0A0A0A]"
+                : "bg-black/40 border-white/40 text-transparent"
+            }`}>
+              {isSelected && (
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                  <path d="M2 6L5 9L10 3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
+            </div>
+          )}
+          {item.referenceImage ? (
+            <img
+              src={item.referenceImage}
+              alt={item.name}
+              className="w-full h-full object-cover"
+              loading="lazy"
+              onError={(e) => {
+                const img = e.currentTarget;
+                img.style.display = "none";
+                const placeholder = img.nextElementSibling as HTMLElement | null;
+                if (placeholder) placeholder.style.display = "flex";
+              }}
+            />
+          ) : null}
+          <div
+            className="items-center justify-center w-full h-full text-[var(--text-muted)]"
+            style={{ display: item.referenceImage ? "none" : "flex" }}
+          >
+            {(() => { const Icon = TABS.find((t) => t.key === activeTab)?.icon || User; return <Icon size={28} />; })()}
+          </div>
+
+          {!multiSelectMode && (
+          <div className="absolute top-2 right-2 flex gap-1">
+            {isCurrent && item.referenceImage && isValidImageRef(item.referenceImage) && (
+              <button
+                onClick={(e) => { e.stopPropagation(); handleUploadSingleToSora(item); }}
+                disabled={uploadingItemId === item.id}
+                className={`flex items-center justify-center w-7 h-7 rounded-full transition cursor-pointer ${
+                  getSoraUploadRecord(item.id)
+                    ? "bg-purple-600/80 text-white hover:bg-purple-600"
+                    : "bg-black/60 text-purple-300 hover:bg-purple-600 hover:text-white"
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+                title={getSoraUploadRecord(item.id)
+                  ? `已上传到贞贞工坊（@${getSoraUploadRecord(item.id)?.username}）点击重新上传`
+                  : "上传到贞贞工坊-Sora"}
+              >
+                {uploadingItemId === item.id ? <Loader size={12} className="animate-spin" /> : <ExternalLink size={11} />}
+              </button>
+            )}
+            <button
+              onClick={(e) => { e.stopPropagation(); openEdit(item); }}
+              className="flex items-center justify-center w-7 h-7 rounded-full bg-black/60 text-white/70 hover:bg-[var(--gold-primary)] hover:text-black transition cursor-pointer"
+              title="编辑"
+            >
+              <Edit3 size={12} />
+            </button>
+            <div className="relative">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMoveMenuFor((prev) => prev === itemKey ? null : itemKey);
+                }}
+                className="flex items-center justify-center w-7 h-7 rounded-full bg-black/60 text-white/70 hover:bg-blue-500 hover:text-white transition cursor-pointer"
+                title="移动到其他分类"
+              >
+                <ArrowRightLeft size={11} />
+              </button>
+              {moveMenuFor === itemKey && (
+                <div className="absolute z-30 top-full right-0 mt-1 min-w-[120px] bg-[#1A1A1A] border border-[var(--border-default)] rounded shadow-lg py-1">
+                  {TABS.filter((tab) => tab.key !== item.type).map((tab) => {
+                    const MoveIcon = tab.icon;
+                    return (
+                      <button
+                        key={tab.key}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleMoveItem(item, tab.key);
+                        }}
+                        className="flex items-center gap-2 w-full px-3 py-2 text-[11px] text-[var(--text-secondary)] hover:bg-[var(--bg-surface)] hover:text-[var(--gold-primary)] transition cursor-pointer text-left"
+                      >
+                        <MoveIcon size={12} />
+                        移至{tab.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            <button
+              onClick={(e) => { e.stopPropagation(); handleDelete(item); }}
+              className="flex items-center justify-center w-7 h-7 rounded-full bg-black/60 text-red-400 hover:bg-red-500 hover:text-white transition cursor-pointer"
+              title="删除"
+            >
+              <Trash2 size={12} />
+            </button>
+          </div>
+          )}
+
+          {item.referenceImage && (
+            <button
+              onClick={() => setPreviewImage({ url: item.referenceImage!, name: item.name })}
+              className="absolute bottom-2 right-2 flex items-center justify-center w-7 h-7 rounded-full bg-black/50 text-white/60 opacity-0 group-hover:opacity-100 hover:bg-black/80 hover:text-white transition cursor-pointer"
+              title="放大查看"
+            >
+              <ZoomIn size={12} />
+            </button>
+          )}
+
+          {!multiSelectMode && (
+          <div className={`absolute top-2 left-2 px-2 py-0.5 rounded text-[9px] font-medium ${
+            isCurrent
+              ? "bg-[var(--gold-primary)]/20 text-[var(--gold-primary)]"
+              : "bg-blue-500/20 text-blue-400"
+          }`}>
+            {isCurrent ? "当前" : "归档"}
+          </div>
+          )}
+        </div>
+
+        <div className="px-3 py-2.5 flex flex-col gap-1">
+          <p className="text-[12px] font-medium text-[var(--text-primary)] truncate">{item.name}</p>
+          {item.subType && (
+            <div className="flex items-center gap-1">
+              <span className="inline-flex items-center rounded-full border border-[var(--gold-primary)]/25 bg-[var(--gold-primary)]/10 px-2 py-0.5 text-[9px] text-[var(--gold-primary)]">
+                {item.subType}
+              </span>
+              {item.groupBase && (
+                <span className="text-[9px] text-[var(--text-muted)] truncate">基础设定：{item.groupBase}</span>
+              )}
+            </div>
+          )}
+          {item.description && (
+            <p className="text-[10px] text-[var(--text-muted)] line-clamp-2 leading-relaxed">{item.description}</p>
+          )}
+          {!isCurrent && (
+            <p className="text-[9px] text-[var(--text-muted)] truncate mt-0.5">
+              来源: {item.sourceName}
+            </p>
+          )}
+          {(() => {
+            const upload = getSoraUploadRecord(item.id);
+            if (!upload) return null;
+            return (
+              <div className="flex items-center gap-1 mt-0.5">
+                <Check size={9} className="text-purple-400" />
+                <span
+                  className="text-[9px] text-purple-400 truncate"
+                  title={`@${upload.username} · ${new Date(upload.uploadedAt).toLocaleString()}`}
+                >
+                  {upload.platform} · @{upload.username}
+                </span>
+              </div>
+            );
+          })()}
+        </div>
+      </div>
+    );
+  }, [
+    activeTab,
+    getSoraUploadRecord,
+    handleDelete,
+    handleMoveItem,
+    handleUploadSingleToSora,
+    multiSelectMode,
+    openEdit,
+    selectedIds,
+    uploadingItemId,
+  ]);
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -1272,189 +1595,67 @@ export default function LibraryPage() {
                 <span className="text-[11px]">可在生图工作台通过 AI 提取添加，或点击上方「新增{tabLabel}」手动添加</span>
               )}
             </div>
-          ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-              {filteredItems.map((item) => {
-                const isCurrent = item.source === "current";
-                const itemKey = `${item.source}-${item.id}`;
-                const isSelected = selectedIds.has(itemKey);
+          ) : activeTab === "characters" ? (
+            <div className="flex flex-col gap-6">
+              {characterGroupedView.groups.map((group) => {
+                const isCollapsed = !!collapsedGroups[group.key];
                 return (
-                  <div
-                    key={itemKey}
-                    onClick={multiSelectMode ? () => {
-                      setSelectedIds(prev => {
-                        const next = new Set(prev);
-                        if (next.has(itemKey)) next.delete(itemKey); else next.add(itemKey);
-                        return next;
-                      });
-                    } : undefined}
-                    className={`flex flex-col rounded-lg overflow-hidden border bg-[#171717] transition group ${
-                      multiSelectMode ? "cursor-pointer" : ""
-                    } ${
-                      isSelected
-                        ? "border-[var(--gold-primary)] ring-1 ring-[var(--gold-primary)]"
-                        : "border-[var(--border-default)] hover:border-[var(--text-muted)]"
-                    }`}
+                  <section
+                    key={group.key}
+                    className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-panel)]/55 p-4"
                   >
-                    {/* 图片 */}
-                    <div className="relative w-full aspect-square bg-[#111]">
-                      {/* 多选复选框 */}
-                      {multiSelectMode && (
-                        <div className={`absolute top-2 left-2 z-10 flex items-center justify-center w-6 h-6 rounded border-2 transition ${
-                          isSelected
-                            ? "bg-[var(--gold-primary)] border-[var(--gold-primary)] text-[#0A0A0A]"
-                            : "bg-black/40 border-white/40 text-transparent"
-                        }`}>
-                          {isSelected && (
-                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                              <path d="M2 6L5 9L10 3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                            </svg>
+                    <button
+                      onClick={() => toggleCharacterGroup(group.key)}
+                      className="flex w-full items-center justify-between gap-3 cursor-pointer"
+                    >
+                      <div className="flex min-w-0 flex-col items-start gap-1 text-left">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[14px] font-semibold text-[var(--text-primary)]">{group.groupBase}</span>
+                          <span className="rounded-full border border-[var(--gold-primary)]/20 bg-[var(--gold-primary)]/10 px-2 py-0.5 text-[10px] text-[var(--gold-primary)]">
+                            {group.items.length} 个状态
+                          </span>
+                          {group.source !== "current" && (
+                            <span className="text-[10px] text-[var(--text-muted)]">来源：{group.sourceName}</span>
                           )}
                         </div>
-                      )}
-                      {item.referenceImage ? (
-                        <img
-                          src={item.referenceImage}
-                          alt={item.name}
-                          className="w-full h-full object-cover"
-                          loading="lazy"
-                          onError={(e) => {
-                            // ★ 图片加载失败时隐藏 <img>，显示占位符
-                            const img = e.currentTarget;
-                            img.style.display = "none";
-                            const placeholder = img.nextElementSibling as HTMLElement | null;
-                            if (placeholder) placeholder.style.display = "flex";
-                          }}
-                        />
-                      ) : null}
-                      <div
-                        className="items-center justify-center w-full h-full text-[var(--text-muted)]"
-                        style={{ display: item.referenceImage ? "none" : "flex" }}
-                      >
-                        {(() => { const Icon = TABS.find((t) => t.key === activeTab)?.icon || User; return <Icon size={28} />; })()}
-                      </div>
-
-                      {/* 操作按钮：多选模式下隐藏 */}
-                      {!multiSelectMode && (
-                      <div className="absolute top-2 right-2 flex gap-1">
-                        {isCurrent && item.referenceImage && isValidImageRef(item.referenceImage) && (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); handleUploadSingleToSora(item); }}
-                            disabled={uploadingItemId === item.id}
-                            className={`flex items-center justify-center w-7 h-7 rounded-full transition cursor-pointer ${
-                              getSoraUploadRecord(item.id)
-                                ? "bg-purple-600/80 text-white hover:bg-purple-600"
-                                : "bg-black/60 text-purple-300 hover:bg-purple-600 hover:text-white"
-                            } disabled:opacity-50 disabled:cursor-not-allowed`}
-                            title={getSoraUploadRecord(item.id)
-                              ? `已上传到贞贞工坊（@${getSoraUploadRecord(item.id)?.username}）点击重新上传`
-                              : "上传到贞贞工坊-Sora"}
-                          >
-                            {uploadingItemId === item.id ? <Loader size={12} className="animate-spin" /> : <ExternalLink size={11} />}
-                          </button>
-                        )}
-                        <button
-                          onClick={(e) => { e.stopPropagation(); openEdit(item); }}
-                          className="flex items-center justify-center w-7 h-7 rounded-full bg-black/60 text-white/70 hover:bg-[var(--gold-primary)] hover:text-black transition cursor-pointer"
-                          title="编辑"
-                        >
-                          <Edit3 size={12} />
-                        </button>
-                        <div className="relative">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setMoveMenuFor((prev) => prev === itemKey ? null : itemKey);
-                            }}
-                            className="flex items-center justify-center w-7 h-7 rounded-full bg-black/60 text-white/70 hover:bg-blue-500 hover:text-white transition cursor-pointer"
-                            title="移动到其他分类"
-                          >
-                            <ArrowRightLeft size={11} />
-                          </button>
-                          {moveMenuFor === itemKey && (
-                            <div className="absolute z-30 top-full right-0 mt-1 min-w-[120px] bg-[#1A1A1A] border border-[var(--border-default)] rounded shadow-lg py-1">
-                              {TABS.filter((tab) => tab.key !== item.type).map((tab) => {
-                                const MoveIcon = tab.icon;
-                                return (
-                                  <button
-                                    key={tab.key}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleMoveItem(item, tab.key);
-                                    }}
-                                    className="flex items-center gap-2 w-full px-3 py-2 text-[11px] text-[var(--text-secondary)] hover:bg-[var(--bg-surface)] hover:text-[var(--gold-primary)] transition cursor-pointer text-left"
-                                  >
-                                    <MoveIcon size={12} />
-                                    移至{tab.label}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleDelete(item); }}
-                          className="flex items-center justify-center w-7 h-7 rounded-full bg-black/60 text-red-400 hover:bg-red-500 hover:text-white transition cursor-pointer"
-                          title="删除"
-                        >
-                          <Trash2 size={12} />
-                        </button>
-                      </div>
-                      )}
-
-                      {/* 大图预览 */}
-                      {item.referenceImage && (
-                        <button
-                          onClick={() => setPreviewImage({ url: item.referenceImage!, name: item.name })}
-                          className="absolute bottom-2 right-2 flex items-center justify-center w-7 h-7 rounded-full bg-black/50 text-white/60 opacity-0 group-hover:opacity-100 hover:bg-black/80 hover:text-white transition cursor-pointer"
-                          title="放大查看"
-                        >
-                          <ZoomIn size={12} />
-                        </button>
-                      )}
-
-                      {/* 来源标签：多选模式时右移避让复选框 */}
-                      {!multiSelectMode && (
-                      <div className={`absolute top-2 left-2 px-2 py-0.5 rounded text-[9px] font-medium ${
-                        isCurrent
-                          ? "bg-[var(--gold-primary)]/20 text-[var(--gold-primary)]"
-                          : "bg-blue-500/20 text-blue-400"
-                      }`}>
-                        {isCurrent ? "当前" : "归档"}
-                      </div>
-                      )}
-                    </div>
-
-                    {/* 信息 */}
-                    <div className="px-3 py-2.5 flex flex-col gap-1">
-                      <p className="text-[12px] font-medium text-[var(--text-primary)] truncate">{item.name}</p>
-                      {item.description && (
-                        <p className="text-[10px] text-[var(--text-muted)] line-clamp-2 leading-relaxed">{item.description}</p>
-                      )}
-                      {!isCurrent && (
-                        <p className="text-[9px] text-[var(--text-muted)] truncate mt-0.5">
-                          来源: {item.sourceName}
+                        <p className="text-[11px] text-[var(--text-muted)]">
+                          多状态角色分组，适合管理同一角色的常态、战损态、觉醒态等变体
                         </p>
-                      )}
-                      {(() => {
-                        const upload = getSoraUploadRecord(item.id);
-                        if (!upload) return null;
-                        return (
-                          <div className="flex items-center gap-1 mt-0.5">
-                            <Check size={9} className="text-purple-400" />
-                            <span
-                              className="text-[9px] text-purple-400 truncate"
-                              title={`@${upload.username} · ${new Date(upload.uploadedAt).toLocaleString()}`}
-                            >
-                              {upload.platform} · @{upload.username}
-                            </span>
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  </div>
+                      </div>
+                      <ChevronDown
+                        size={16}
+                        className={`shrink-0 text-[var(--text-muted)] transition-transform ${isCollapsed ? "-rotate-90" : ""}`}
+                      />
+                    </button>
+                    {!isCollapsed && (
+                      <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+                        {group.items.map(renderItemCard)}
+                      </div>
+                    )}
+                  </section>
                 );
               })}
+
+              {characterGroupedView.ungrouped.length > 0 && (
+                <section className="flex flex-col gap-3">
+                  {characterGroupedView.groups.length > 0 && (
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <h2 className="text-[13px] font-semibold text-[var(--text-primary)]">未分组角色</h2>
+                        <p className="text-[11px] text-[var(--text-muted)]">未命中多状态命名规则的角色会保留在这里</p>
+                      </div>
+                      <span className="text-[10px] text-[var(--text-muted)]">{characterGroupedView.ungrouped.length} 个条目</span>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+                    {characterGroupedView.ungrouped.map(renderItemCard)}
+                  </div>
+                </section>
+              )}
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+              {filteredItems.map(renderItemCard)}
             </div>
           )}
         </div>

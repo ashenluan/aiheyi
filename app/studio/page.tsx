@@ -16,7 +16,7 @@ import {
   ConsistencyProfile, loadConsistency, loadConsistencyAsync, saveConsistency, defaultProfile,
   buildConsistencyContext, collectReferenceImages, loadSystemPrompts, loadSystemPromptsAsync,
   saveConsistencyImages, restoreConsistencyImagesFromDisk, resolveRefBindIds, itemMatchesPrompt, itemMatchesPromptRelaxed,
-  isValidImageRef, exportConsistencyToFile,
+  isValidImageRef, exportConsistencyToFile, deriveCharacterGrouping, normalizeCharacterList,
 } from "../lib/consistency";
 import { kvLoad, kvSet, kvKeysByPrefix } from "../lib/kvDB";
 import { migrateFromLocalStorage } from "../lib/imageDB";
@@ -38,6 +38,13 @@ import type { JimengClientTask } from "../lib/jimeng-image/clientTaskStore";
 import { JIMENG_IMAGE_MODEL_OPTIONS, type JimengImageModelId, type JimengImageResolution } from "../lib/jimeng-image/types";
 import { buildPipelineToStudioChecklist } from "../lib/workflowHandoff";
 import { buildOutputEntries, persistProvenanceManifest, summarizeAssetList } from "../lib/provenance/client";
+import {
+  buildGridImageInstruction,
+  buildGridLayoutDiagram,
+  buildGridPlacementTail,
+  buildSingleFrameInstruction,
+  sanitizeStoryboardPromptForRoute,
+} from "../lib/routePromptConstants";
 
 // ═══════════════════════════════════════════════════════════
 // Prompt Parsers
@@ -955,6 +962,14 @@ export default function StudioPage() {
   // 即梦模型显示名
   const jimengModelLabel = JIMENG_IMAGE_MODEL_OPTIONS.find(o => o.value === jimengModel)?.label || jimengModel;
 
+  const applyCustomGridCount = useCallback((nextCount: number) => {
+    const safeCount = Math.max(1, Math.min(25, nextCount));
+    setActiveMode("custom");
+    setCustomGridCount(safeCount);
+    setCustomPrompts((prev) => Array.from({ length: safeCount }, (_, idx) => prev[idx] || ""));
+    setSelectedCell((prev) => Math.min(prev, safeCount - 1));
+  }, []);
+
   // Restore imageGenMode from localStorage on mount
   useEffect(() => {
     try {
@@ -1041,11 +1056,19 @@ export default function StudioPage() {
   const unmountedRef = useRef(false); // Track component unmount — used to skip UI-only setState, NOT to abort operations
   const consistencyRef = useRef(consistency); // Always track latest consistency for background persistence
   consistencyRef.current = consistency;
+  const consistencyStructureFpRef = useRef(buildConsistencyStructureFingerprint(studioCache.consistency || defaultProfile()));
   const consistencyImageFpRef = useRef(""); // Track image data fingerprint to avoid unnecessary IDB writes
+  const selfConsistencySaveRef = useRef(false); // Guard against save->reload->save self-trigger loops
   const diskSyncInProgressRef = useRef(false); // ★ 磁盘补取进行中时阻止 auto-save 写盘（防止旧缓存的空 styleImage 删除磁盘文件）
   const upscaleCellRef = useRef<(key: string, batchMode?: boolean) => Promise<void>>(async () => {}); // Latest upscaleCell ref for batch loops
   const reUpscaleCellRef = useRef<(key: string, batchMode?: boolean) => Promise<void>>(async () => {}); // Latest second-upscale ref for batch loops
   const generatingLockRef = useRef(globalGeneratingLock); // Points to module-level set — survives unmount/remount
+
+  const markConsistencySaved = useCallback((profile: ConsistencyProfile) => {
+    selfConsistencySaveRef.current = true;
+    consistencyStructureFpRef.current = buildConsistencyStructureFingerprint(profile);
+    void saveConsistency(profile);
+  }, []);
 
   // Grid Images — 从缓存恢复
   const [gridImages, setGridImages] = useState<Record<string, string>>(studioCache.gridImages);
@@ -1478,7 +1501,10 @@ export default function StudioPage() {
           timeSetting: updated.style.timeSetting || data.style.timeSetting || "",
         };
       }
-      saveConsistency(updated);
+      if (buildConsistencyStructureFingerprint(updated) === buildConsistencyStructureFingerprint(prev)) {
+        return prev;
+      }
+      markConsistencySaved(updated);
       return updated;
     });
 
@@ -1488,7 +1514,7 @@ export default function StudioPage() {
     toast(`流水线自动提取完成！角色 ${charCount}，场景 ${sceneCount}，道具 ${propCount}`, "success");
     setLeftTab("chars");
     clearExtractResult();
-  }, [extractResult, clearExtractResult, toast]);
+  }, [extractResult, clearExtractResult, markConsistencySaved, toast]);
 
   // ── Persist UI state on every change (includes ref-bind IDs keyed by episode) ──
   useEffect(() => {
@@ -2077,9 +2103,17 @@ export default function StudioPage() {
       console.log(`[auto-save] ⏭ 磁盘补取进行中，跳过全部保存（防止旧缓存覆盖 IDB）`);
       return;
     }
-    // Local saves are fast — run immediately
-    console.log(`[auto-save] saveConsistency → 角色${consistency.characters.length} 场景${consistency.scenes.length} 道具${consistency.props.length}`);
-    saveConsistency(consistency);
+    const structureFp = buildConsistencyStructureFingerprint(consistency);
+    const structureChanged = structureFp !== consistencyStructureFpRef.current;
+    if (selfConsistencySaveRef.current) {
+      selfConsistencySaveRef.current = false;
+      consistencyStructureFpRef.current = structureFp;
+      console.log("[auto-save] ⏭ selfConsistencySaveRef 命中，跳过重复 saveConsistency");
+    } else if (structureChanged) {
+      consistencyStructureFpRef.current = structureFp;
+      console.log(`[auto-save] saveConsistency → 角色${consistency.characters.length} 场景${consistency.scenes.length} 道具${consistency.props.length}`);
+      void saveConsistency(consistency);
+    }
     // Only write images to disk when image data actually changes (avoid redundant writes on text edits)
     const imageFp = [
       `s:${consistency.style.styleImage?.length || 0}:${consistency.style.styleImage?.slice(-40) || ""}`,
@@ -2536,6 +2570,7 @@ export default function StudioPage() {
    */
   async function viewFullPrompt(mode: "nine" | "four" | "smartNine" | "custom", beatIdx?: number) {
     const settings = getSettings();
+    const previewImageGenMode = imageGenModeRef.current;
     // Build the prompt exactly like generateNineGrid / generateFourGrid does
     let refImages: string[];
     let promptText: string;
@@ -2713,7 +2748,10 @@ export default function StudioPage() {
     const refLabelLines = sheetEntries.map(e => e.label);
     const totalRefs = sheetEntries.length;
 
-    const finalPrompt = promptText.slice(0, 8000);
+    const sanitizedPrompt = sanitizeStoryboardPromptForRoute(promptText, {
+      preserveGridLayout: previewImageGenMode === "geminiTab",
+    });
+    const finalPrompt = sanitizedPrompt.slice(0, 8000);
 
     // API request metadata
     const effectiveSize = consistency.style.resolution || "4K";
@@ -2840,54 +2878,14 @@ ${sheetEntries.map((entry, i) => {
     const totalCells = gridCount ?? 9;
     const cols = totalCells <= 4 ? 2 : totalCells <= 9 ? 3 : totalCells <= 16 ? 4 : 5;
     const rows = Math.ceil(totalCells / cols);
-
-    // 动态生成 grid layout diagram
-    function buildGridDiagram(c: number, r: number, total: number, portrait: boolean): string {
-      const cellWidth = portrait ? 4 : 9;
-      const lines: string[] = [];
-      // 顶部边框
-      lines.push("┌" + Array.from({ length: c }, () => "─".repeat(cellWidth)).join("┬") + "┐");
-      for (let ri = 0; ri < r; ri++) {
-        if (portrait) {
-          // 竖版: 三行高度
-          const topLine = "│" + Array.from({ length: c }, (_, ci) => {
-            const idx = ri * c + ci + 1;
-            return idx <= total ? " ".repeat(cellWidth) : " ".repeat(cellWidth);
-          }).join("│") + "│";
-          const midLine = "│" + Array.from({ length: c }, (_, ci) => {
-            const idx = ri * c + ci + 1;
-            if (idx > total) return " ".repeat(cellWidth);
-            const label = `S${idx}`;
-            const pad = cellWidth - label.length;
-            const left = Math.floor(pad / 2);
-            return " ".repeat(left) + label + " ".repeat(pad - left);
-          }).join("│") + "│";
-          lines.push(topLine, midLine, topLine);
-        } else {
-          // 横版: 单行
-          const row = "│" + Array.from({ length: c }, (_, ci) => {
-            const idx = ri * c + ci + 1;
-            if (idx > total) return " ".repeat(cellWidth);
-            const label = `Shot ${idx}`;
-            const pad = cellWidth - label.length;
-            const left = Math.floor(pad / 2);
-            return " ".repeat(left) + label + " ".repeat(pad - left);
-          }).join("│") + "│";
-          lines.push(row);
-        }
-        // 行间分隔/底部边框
-        if (ri < r - 1) {
-          lines.push("├" + Array.from({ length: c }, () => "─".repeat(cellWidth)).join("┼") + "┤");
-        }
-      }
-      lines.push("└" + Array.from({ length: c }, () => "─".repeat(cellWidth)).join("┴") + "┘");
-      return lines.join("\n");
-    }
-
-    const diagramBody = buildGridDiagram(cols, rows, totalCells, isPortrait);
-    const gridLayoutDiagram = isPortrait
-      ? `GRID LAYOUT (${cols}×${rows} portrait cells, read left→right, top→bottom):\n${diagramBody}\nEach cell is PORTRAIT (taller than wide, 9:16 ratio).`
-      : `GRID LAYOUT (read left→right, top→bottom):\n${diagramBody}`;
+    const gridLayoutDiagram = buildGridLayoutDiagram({
+      cols,
+      rows,
+      totalCells,
+      isPortrait,
+      portraitCellTokenPrefix: "S",
+      landscapeCellLabel: "Shot",
+    });
 
     // 动态生成 shot 位置标签
     function getShotLabel(idx: number): string {
@@ -2903,18 +2901,13 @@ ${sheetEntries.map((entry, i) => {
       return `Row${ri}-${colNames[ci] || `Col${ci + 1}`}`;
     }
 
-    // ★ Consistency tail instruction — appended to all grid prompts
-    const consistencyTail = `\n\nUse the reference images as the primary subject. Pay attention to the spatial layout of the environment, the relative positions of characters and all objects in the space. Generate coherent storyboard frames from different angles that follow the plot progression. Maintain strict consistency with the art style of the reference images.`;
-
-    // ★ Era/world background hint — time-of-day/lighting is now determined per-shot by the LLM via Gem.txt
-    const eraHint = consistency.style.timeSetting
-      ? `\n\nERA / WORLD BACKGROUND: ${consistency.style.timeSetting}.`
-      : "";
-
-    const cellRatioHint = isPortrait ? ` CRITICAL: Each of the ${totalCells} cells must be PORTRAIT orientation (9:16 aspect ratio, taller than wide). Do NOT make landscape/wide cells.` : "";
-
-    // 结尾指令
-    const importantTail = `\n\nIMPORTANT: Place each shot EXACTLY in its designated grid cell as shown above. ${totalCells} cells arranged in ${rows} rows × ${cols} columns, clear composition, consistent lighting across all shots, no timecode, no subtitles.${cellRatioHint}${eraHint}${consistencyTail}`;
+    const importantTail = buildGridPlacementTail({
+      subjectLabel: "shot",
+      bodyText: `${totalCells} cells arranged in ${rows} rows × ${cols} columns, clear composition, consistent lighting across all shots, `,
+      totalCells,
+      isPortrait,
+      timeSetting: consistency.style.timeSetting,
+    });
 
     // Try to extract English keyword prompts from **[IMG]** markers
     const imagePrompts = prompts.map(p => extractImagePrompt(p));
@@ -2933,7 +2926,12 @@ ${sheetEntries.map((entry, i) => {
     };
 
     const gridDesc = buildGridDesc(hasImagePrompts);
-    return `${refLabels ? refLabels + "\n\n" : ""}Generate a ${cols}×${rows} cinematic storyboard grid image. Overall image aspect ratio: ${consistency.style.aspectRatio}. Each cell aspect ratio: ${consistency.style.aspectRatio}. ${resTxt}\n\n${gridLayoutDiagram}\n\n${gridDesc}${importantTail}`;
+    return `${refLabels ? refLabels + "\n\n" : ""}${buildGridImageInstruction({
+      cols,
+      rows,
+      aspectRatio: consistency.style.aspectRatio,
+      resolutionText: resTxt,
+    })}\n\n${gridLayoutDiagram}\n\n${gridDesc}\n\n${importantTail}`;
   }
 
   function buildCleanFourGridPrompt(scenes: string[], refUrls?: string[], baseFramePosition: FourBaseFramePosition = "first", hasBaseFrame = true): string {
@@ -2941,30 +2939,14 @@ ${sheetEntries.map((entry, i) => {
     const resTxt = getResolutionText(consistency.style.resolution);
     const isPortrait = consistency.style.aspectRatio === "9:16";
 
-    // Visual grid layout diagram for 2×2 — 竖版用窄高格
-    const fourGridDiagram = isPortrait
-      ? `GRID LAYOUT (2×2 portrait cells, read left→right, top→bottom):
-┌──────┬──────┐
-│      │      │
-│  F1  │  F2  │
-│      │      │
-├──────┼──────┤
-│      │      │
-│  F3  │  F4  │
-│      │      │
-└──────┴──────┘
-Each cell is PORTRAIT (taller than wide, 9:16 ratio).`
-      : `GRID LAYOUT (read left→right, top→bottom):
-┌──────────┬──────────┐
-│ Frame 1  │ Frame 2  │
-├──────────┼──────────┤
-│ Frame 3  │ Frame 4  │
-└──────────┴──────────┘`;
-
-    // ★ Era/world background hint — time-of-day/lighting is now determined per-shot by the LLM via Gem.txt
-    const eraHint = consistency.style.timeSetting
-      ? `\n\nERA / WORLD BACKGROUND: ${consistency.style.timeSetting}.`
-      : "";
+    const fourGridDiagram = buildGridLayoutDiagram({
+      cols: 2,
+      rows: 2,
+      totalCells: 4,
+      isPortrait,
+      portraitCellTokenPrefix: "F",
+      landscapeCellLabel: "Frame",
+    });
 
     // Sequential continuity constraint — each frame builds on the previous
     const continuityRule = !hasBaseFrame
@@ -2988,10 +2970,14 @@ Each frame MUST smoothly lead into the next one. No scene jumps, no new characte
 - Frame 4: Continues DIRECTLY from Frame 3 — final beat of the sequence, consistent with all previous frames.
 Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps, no new characters, no environment shifts between frames. Treat this as a continuous camera shot broken into 4 sequential moments.\n\nVISUAL PRIORITY: The attached BASE FRAME image is the ground truth for all visual elements. If the text descriptions below mention different characters, creatures, or environments than what appears in the base frame image, ALWAYS follow the base frame image. The text descriptions only guide the ACTION PROGRESSION, not the visual identity of characters/creatures/settings.`;
 
-    const tail = `IMPORTANT: Place each frame EXACTLY in its designated grid cell as shown above. 4 frames showing continuous action/emotion sequence, no timecode, no subtitles.${continuityRule}`;
-
-    // ★ Consistency tail instruction
-    const consistencyTail = `\n\nUse the reference images as the primary subject. Pay attention to the spatial layout of the environment, the relative positions of characters and all objects in the space. Generate coherent storyboard frames from different angles that follow the plot progression. Maintain strict consistency with the art style of the reference images.`;
+    const tail = buildGridPlacementTail({
+      subjectLabel: "frame",
+      bodyText: "4 frames showing continuous action/emotion sequence, ",
+      totalCells: 4,
+      isPortrait,
+      timeSetting: consistency.style.timeSetting,
+      extraRules: continuityRule,
+    });
 
     // Try to extract English keyword prompts from **[IMG]** markers
     const imagePrompts = scenes.map(s => extractImagePrompt(s));
@@ -3007,8 +2993,13 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
         return `Frame ${i + 1} (${frameLabels[i]}): ${clean.slice(0, 200)}`;
       }).join("\n");
 
-      const cellRatioHint = isPortrait ? " CRITICAL: Each of the 4 cells must be PORTRAIT orientation (9:16 aspect ratio, taller than wide). Do NOT make landscape/wide cells." : "";
-      return `${refLabels ? refLabels + "\n\n" : ""}Generate a 2×2 sequential action grid image. Overall image aspect ratio: ${consistency.style.aspectRatio}. Each cell aspect ratio: ${consistency.style.aspectRatio}. ${resTxt}\n\n${fourGridDiagram}\n\n${gridDesc}\n\n${tail}${cellRatioHint}${eraHint}${consistencyTail}`;
+      return `${refLabels ? refLabels + "\n\n" : ""}${buildGridImageInstruction({
+        cols: 2,
+        rows: 2,
+        aspectRatio: consistency.style.aspectRatio,
+        resolutionText: resTxt,
+        descriptor: "sequential action grid image",
+      })}\n\n${fourGridDiagram}\n\n${gridDesc}\n\n${tail}`;
     }
 
     // Fallback: legacy format — still use English instructions
@@ -3018,8 +3009,13 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
       return `Frame ${i + 1} (${frameLabelsLegacy[i]}): ${clean.slice(0, 200)}`;
     }).join("\n");
 
-    const cellRatioHint = isPortrait ? " CRITICAL: Each of the 4 cells must be PORTRAIT orientation (9:16 aspect ratio, taller than wide). Do NOT make landscape/wide cells." : "";
-    return `${refLabels ? refLabels + "\n\n" : ""}Generate a 2×2 sequential action grid image. Overall image aspect ratio: ${consistency.style.aspectRatio}. Each cell aspect ratio: ${consistency.style.aspectRatio}. ${resTxt}\n\n${fourGridDiagram}\n\n${gridDesc}\n\n${tail}${cellRatioHint}${eraHint}${consistencyTail}`;
+    return `${refLabels ? refLabels + "\n\n" : ""}${buildGridImageInstruction({
+      cols: 2,
+      rows: 2,
+      aspectRatio: consistency.style.aspectRatio,
+      resolutionText: resTxt,
+      descriptor: "sequential action grid image",
+    })}\n\n${fourGridDiagram}\n\n${gridDesc}\n\n${tail}`;
   }
 
   function buildSingleCellPrompt(cellPrompt: string, refUrls?: string[], hasBaseFrame = false, baseFramePosition: FourBaseFramePosition = "first"): string {
@@ -3028,18 +3024,21 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
 
     // Try to use English image prompt if available
     const imgPrompt = extractImagePrompt(cellPrompt);
-    const consistencyTail = `\n\nUse the reference images as the primary subject. Pay attention to the spatial layout of the environment, the relative positions of characters and all objects in the space. Generate coherent storyboard frames from different angles that follow the plot progression. Maintain strict consistency with the art style of the reference images.`;
-    // ★ Era/world background hint — time-of-day/lighting is already embedded per-shot by LLM
-    const eraHint = consistency.style.timeSetting
-      ? ` Era/world: ${consistency.style.timeSetting}.`
-      : "";
     if (imgPrompt.length > 10) {
-      return `${refLabels ? refLabels + "\n\n" : ""}${imgPrompt}\n\nGenerate a high-quality cinematic storyboard frame. Aspect ratio ${consistency.style.aspectRatio}. ${resTxt}Stable composition, realistic lighting, consistent characters, no timecode, no subtitles.${eraHint}${consistencyTail}`;
+      return `${refLabels ? refLabels + "\n\n" : ""}${imgPrompt}\n\n${buildSingleFrameInstruction({
+        aspectRatio: consistency.style.aspectRatio,
+        resolutionText: resTxt,
+        timeSetting: consistency.style.timeSetting,
+      })}`;
     }
 
     // Fallback: use narrative text — still wrap in English instructions
     const clean = cellPrompt.replace(/\*\*/g, "").replace(/#+\s*/g, "").replace(/\n+/g, " ").trim();
-    return `${refLabels ? refLabels + "\n\n" : ""}${clean.slice(0, 800)}\n\nGenerate a high-quality cinematic storyboard frame. Aspect ratio ${consistency.style.aspectRatio}. ${resTxt}Stable composition, realistic lighting, consistent characters, no timecode, no subtitles.${eraHint}${consistencyTail}`;
+    return `${refLabels ? refLabels + "\n\n" : ""}${clean.slice(0, 800)}\n\n${buildSingleFrameInstruction({
+      aspectRatio: consistency.style.aspectRatio,
+      resolutionText: resTxt,
+      timeSetting: consistency.style.timeSetting,
+    })}`;
   }
 
   // ── Gemini Tab 服务可用性前置检查 ──
@@ -3305,11 +3304,14 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
     }
 
     // Truncate if needed (no reinforcement — labels are interleaved with images via referenceLabels)
-    const truncated = prompt.length > 8000;
-    let finalPrompt = prompt.slice(0, 8000);
+    const sanitizedPrompt = sanitizeStoryboardPromptForRoute(prompt, {
+      preserveGridLayout: currentImageGenMode === "geminiTab",
+    });
+    const truncated = sanitizedPrompt.length > 8000;
+    let finalPrompt = sanitizedPrompt.slice(0, 8000);
     if (truncated) {
-      console.warn(`[callImageApi] ⚠ Prompt truncated from ${prompt.length} to 8000 chars`);
-      toast(`提示词超长(${prompt.length}字)，已截断至8000字，可能影响生图效果`, "error");
+      console.warn(`[callImageApi] ⚠ Prompt truncated from ${sanitizedPrompt.length} to 8000 chars`);
+      toast(`提示词超长(${sanitizedPrompt.length}字)，已截断至8000字，可能影响生图效果`, "error");
     }
 
     // ═══ Gemini Tab Mode: route through browser automation ═══
@@ -5124,15 +5126,16 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
 
         // ★ Overwrite mode: replace all existing items with fresh AI extraction results
         // Only referenceImage is NOT lost — if a new item matches an old one by name, keep the old image
-        function freshItems<T extends { id: string; name: string; referenceImage?: string; prompt?: string; aliases?: string[] }>(
+        function freshItems<T extends { id: string; name: string; referenceImage?: string; prompt?: string; aliases?: string[]; groupId?: string; groupBase?: string; subType?: string }>(
           existing: T[],
-          extracted: { name: string; description: string; prompt?: string; aliases?: string[] }[],
+          extracted: { name: string; description: string; prompt?: string; aliases?: string[]; groupId?: string; groupBase?: string; subType?: string }[],
           idPrefix: string
         ): T[] {
           return extracted.map((newItem, i) => {
             // Try to find an existing item with the same name to preserve its referenceImage
             const normalName = (newItem.name || "").toLowerCase().trim();
             const matched = normalName ? existing.find((old) => (old.name || "").toLowerCase().trim() === normalName) : undefined;
+            const grouping = idPrefix === "char" ? deriveCharacterGrouping(newItem.name) : {};
             return {
               id: matched?.id || `${idPrefix}-${Date.now()}-${i}`,  // ★ 匹配时保留原 ID，避免并发 generateRefImage 找不到 item
               name: newItem.name,
@@ -5140,6 +5143,9 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
               prompt: newItem.prompt || "",
               aliases: newItem.aliases || [],
               referenceImage: matched?.referenceImage || undefined,
+              groupId: matched?.groupId || newItem.groupId || grouping.groupId,
+              groupBase: matched?.groupBase || newItem.groupBase || grouping.groupBase,
+              subType: matched?.subType || newItem.subType || grouping.subType,
             } as unknown as T;
           });
         }
@@ -5151,7 +5157,7 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
         setConsistency((prev) => {
           const updated: ConsistencyProfile = { ...prev };
           if (data.characters?.length > 0) {
-            updated.characters = freshItems(prev.characters, data.characters, "char");
+            updated.characters = normalizeCharacterList(freshItems(prev.characters, data.characters, "char"));
           }
           // else: 保留 prev.characters，不清零
           if (data.scenes?.length > 0) {
@@ -5173,13 +5179,17 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
               };
             }
           }
+          if (buildConsistencyStructureFingerprint(updated) === buildConsistencyStructureFingerprint(prev)) {
+            extractedSnapshot = prev;
+            return prev;
+          }
           extractedSnapshot = updated;
           return updated;
         });
         // ★ 显式保存：防止页面卸载前 auto-save effect 未触发导致数据丢失
         // React 同步调用函数式更新器，extractedSnapshot 此时已是最新计算值
         if (extractedSnapshot) {
-          saveConsistency(extractedSnapshot);
+          markConsistencySaved(extractedSnapshot as ConsistencyProfile);
           console.log(`[AI提取] 显式保存 extractedSnapshot → 角色${(extractedSnapshot as ConsistencyProfile).characters.length} 场景${(extractedSnapshot as ConsistencyProfile).scenes.length} 道具${(extractedSnapshot as ConsistencyProfile).props.length}`);
 
           // ★ 清理孤儿 URL：标记过时的旧 ID，让磁盘文件不再被 UI 引用。
@@ -5566,19 +5576,25 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
       });
       if (res.ok) {
         const data = await res.json();
-        setConsistency((prev) => ({
-          ...prev, style: {
-            ...prev.style,
-            artStyle: data.artStyle || prev.style.artStyle,
-            colorPalette: data.colorPalette || prev.style.colorPalette,
-            stylePrompt: JSON.stringify({
-              artStyle: data.artStyle || "",
-              colorPalette: data.colorPalette || "",
-              styleKeywords: data.styleKeywords || "",
-              mood: data.mood || "",
-            }),
-          },
-        }));
+        setConsistency((prev) => {
+          const updated = {
+            ...prev, style: {
+              ...prev.style,
+              artStyle: data.artStyle || prev.style.artStyle,
+              colorPalette: data.colorPalette || prev.style.colorPalette,
+              stylePrompt: JSON.stringify({
+                artStyle: data.artStyle || "",
+                colorPalette: data.colorPalette || "",
+                styleKeywords: data.styleKeywords || "",
+                mood: data.mood || "",
+              }),
+            },
+          };
+          if (buildConsistencyStructureFingerprint(updated) === buildConsistencyStructureFingerprint(prev)) {
+            return prev;
+          }
+          return updated;
+        });
         // Explicit save for background operation support (auto-save effect won't fire if unmounted)
         {
           const prevC = consistencyRef.current;
@@ -5595,7 +5611,7 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
               }),
             },
           };
-          saveConsistency(updated);
+          markConsistencySaved(updated);
         }
         toast("风格识别完成 ✓", "success");
       } else {
@@ -6100,7 +6116,7 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
       const detail = (e as CustomEvent).detail as { count?: number; prompts?: string[]; source?: string } | undefined;
       if (!detail) return;
       if (detail.count && detail.count >= 1 && detail.count <= 25) {
-        setCustomGridCount(detail.count);
+        applyCustomGridCount(detail.count);
       }
       if (detail.prompts && Array.isArray(detail.prompts)) {
         setCustomPrompts(detail.prompts);
@@ -6122,7 +6138,7 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
       }
     } catch { /* ignore */ }
     return () => window.removeEventListener("feicai-custom-grid-update", handleCustomGridUpdate);
-  }, [toast]);
+  }, [applyCustomGridCount, toast]);
 
   // ── Render ──
 
@@ -6388,6 +6404,37 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
                   <X size={11} />
                 </button>
               )}
+            </div>
+          )}
+          {activeMode === "custom" && (
+            <div className="flex items-center gap-3 px-4 py-2 bg-[var(--bg-base)] border-t border-[var(--border-default)]">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-medium text-[var(--text-secondary)]">宫格数量</span>
+                <div className="flex items-center gap-1">
+                  {[
+                    { count: 9, label: "9格", hint: "3×3" },
+                    { count: 16, label: "16格", hint: "4×4" },
+                    { count: 25, label: "25格", hint: "5×5" },
+                  ].map((option) => (
+                    <button
+                      key={option.count}
+                      onClick={() => applyCustomGridCount(option.count)}
+                      className={`flex items-center gap-1 px-2.5 py-1 text-[11px] border transition cursor-pointer ${
+                        customGridCount === option.count
+                          ? "border-[var(--gold-primary)] bg-[var(--gold-transparent)] text-[var(--gold-primary)]"
+                          : "border-[var(--border-default)] text-[var(--text-muted)] hover:border-[var(--gold-primary)] hover:text-[var(--gold-primary)]"
+                      }`}
+                      title={`切换到 ${option.hint} 自定义宫格`}
+                    >
+                      <span>{option.label}</span>
+                      <span className="text-[10px] opacity-70">{option.hint}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <span className="text-[10px] text-[var(--text-muted)]">
+                25宫格会按 5×5 布局生成，适合长节拍拆解或 Gemini 专用多镜头批量生图
+              </span>
             </div>
           )}
         </div>
@@ -8045,6 +8092,234 @@ function StyleTab({ style, onChange, router }: {
 // Nine Grid Area — perfect image fill, no borders
 // ═══════════════════════════════════════════════════════════
 
+function buildConsistencyStructureFingerprint(profile: ConsistencyProfile): string {
+  const packItem = (item: {
+    id: string;
+    name: string;
+    description: string;
+    prompt?: string;
+    aliases?: string[];
+    referenceImage?: string;
+  }) => ({
+    id: item.id,
+    name: item.name,
+    description: item.description,
+    prompt: item.prompt || "",
+    aliases: item.aliases || [],
+    hasReferenceImage: Boolean(item.referenceImage),
+  });
+
+  return JSON.stringify({
+    characters: profile.characters.map(packItem),
+    scenes: profile.scenes.map(packItem),
+    props: profile.props.map(packItem),
+    style: {
+      artStyle: profile.style.artStyle,
+      colorPalette: profile.style.colorPalette,
+      aspectRatio: profile.style.aspectRatio,
+      resolution: profile.style.resolution,
+      timeSetting: profile.style.timeSetting,
+      additionalNotes: profile.style.additionalNotes,
+      stylePrompt: profile.style.stylePrompt || "",
+      stylePresetId: profile.style.stylePresetId || "",
+      stylePresetLabel: profile.style.stylePresetLabel || "",
+      stylePresetEmoji: profile.style.stylePresetEmoji || "",
+      stylePresetSource: profile.style.stylePresetSource || "",
+      styleLocked: Boolean(profile.style.styleLocked),
+      hasStyleImage: Boolean(profile.style.styleImage),
+    },
+  });
+}
+
+function findScrollableAncestor(node: HTMLElement | null): HTMLElement | null {
+  if (typeof window === "undefined") return null;
+  let current = node?.parentElement || null;
+  while (current && current !== document.body) {
+    const style = window.getComputedStyle(current);
+    const overflowY = style.overflowY;
+    const canScroll = (overflowY === "auto" || overflowY === "scroll") && current.scrollHeight > current.clientHeight;
+    if (canScroll) return current;
+    current = current.parentElement;
+  }
+  return null;
+}
+
+function resizeTextareaPreservingScroll(textarea: HTMLTextAreaElement | null) {
+  if (!textarea || typeof window === "undefined") return;
+  const scrollParent = findScrollableAncestor(textarea);
+  const parentScrollTop = scrollParent?.scrollTop ?? 0;
+  const windowScrollY = window.scrollY;
+
+  textarea.style.height = "auto";
+  textarea.style.height = `${textarea.scrollHeight}px`;
+
+  if (scrollParent) {
+    scrollParent.scrollTop = parentScrollTop;
+  } else if (window.scrollY !== windowScrollY) {
+    window.scrollTo({ top: windowScrollY });
+  }
+}
+
+function usePromptDetailPlacement(
+  showDetail: boolean,
+  anchorRef: { current: HTMLElement | null },
+  placementKey: string,
+): "above" | "below" {
+  const [placement, setPlacement] = useState<"above" | "below">("below");
+
+  useEffect(() => {
+    if (!showDetail || typeof window === "undefined") {
+      setPlacement("below");
+      return;
+    }
+
+    const updatePlacement = () => {
+      const rect = anchorRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const midpoint = rect.top + rect.height / 2;
+      setPlacement(midpoint > window.innerHeight * 0.55 ? "above" : "below");
+    };
+
+    const rafId = window.requestAnimationFrame(updatePlacement);
+    window.addEventListener("resize", updatePlacement);
+    window.addEventListener("scroll", updatePlacement, true);
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      window.removeEventListener("resize", updatePlacement);
+      window.removeEventListener("scroll", updatePlacement, true);
+    };
+  }, [anchorRef, placementKey, showDetail]);
+
+  return placement;
+}
+
+function AutoResizePromptTextarea({
+  value,
+  onChange,
+  placeholder,
+  rows = 2,
+  className,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  rows?: number;
+  className: string;
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    resizeTextareaPreservingScroll(textareaRef.current);
+  }, [value]);
+
+  return (
+    <textarea
+      ref={textareaRef}
+      value={value}
+      rows={rows}
+      placeholder={placeholder}
+      onChange={(e) => {
+        onChange(e.target.value);
+        window.requestAnimationFrame(() => resizeTextareaPreservingScroll(textareaRef.current));
+      }}
+      className={className}
+    />
+  );
+}
+
+function PromptDetailPanel({
+  title,
+  fullText,
+  promptsEdited,
+  isTranslating,
+  onTranslate,
+  onCopy,
+  onChange,
+}: {
+  title: string;
+  fullText: string;
+  promptsEdited?: boolean;
+  isTranslating?: boolean;
+  onTranslate?: () => void;
+  onCopy: () => void;
+  onChange: (value: string) => void;
+}) {
+  const imgIdx = fullText.indexOf("**[IMG]**");
+  const chineseDesc = imgIdx >= 0 ? fullText.slice(0, imgIdx).trim() : fullText.trim();
+  const englishPrompt = imgIdx >= 0 ? fullText.slice(imgIdx + "**[IMG]**".length).trim() : "";
+  const hasImg = imgIdx >= 0;
+
+  return (
+    <div data-prompt-scroll-root="true" className="flex flex-col gap-3 p-4 bg-[var(--bg-surface)] border border-[var(--border-default)] rounded">
+      <div className="flex items-center justify-between">
+        <span className="text-[13px] font-semibold text-[var(--text-primary)]">{title}</span>
+        <div className="flex items-center gap-2">
+          {promptsEdited && <span className="text-[10px] text-amber-400">● 已编辑（仅本次会话有效）</span>}
+          {onTranslate && (
+            <button
+              onClick={onTranslate}
+              disabled={isTranslating || !chineseDesc}
+              className="flex items-center gap-1 px-2 py-1 text-[11px] text-blue-400 border border-blue-400/60 hover:bg-blue-400/10 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed rounded"
+            >
+              {isTranslating ? <Loader size={12} className="animate-spin" /> : <Languages size={12} />} AI翻译
+            </button>
+          )}
+          <button
+            onClick={onCopy}
+            className="flex items-center gap-1 px-2 py-1 text-[11px] text-[var(--gold-primary)] border border-[var(--gold-primary)] hover:bg-[var(--gold-transparent)] transition cursor-pointer rounded"
+          >
+            <Copy size={12} /> 复制
+          </button>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 px-3 py-2 rounded border border-amber-500/30 bg-amber-500/5">
+        <span className="text-amber-400 text-sm shrink-0">💡</span>
+        <span className="text-[11px] text-amber-300/90 leading-relaxed">
+          在下方输入<strong className="text-amber-200">中文描述</strong>，点击右上角「
+          <strong className="text-[var(--gold-primary)]">AI 翻译</strong>」可自动转为英文提示词提交给图像模型
+        </span>
+      </div>
+      <div className="flex flex-col gap-1">
+        <span className="text-[10px] text-[var(--text-muted)] font-medium">中文描述</span>
+        <AutoResizePromptTextarea
+          value={chineseDesc}
+          rows={2}
+          placeholder="输入中文分镜描述，点击「AI翻译」可自动生成英文提示词"
+          onChange={(value) => {
+            const next = hasImg ? `${value}\n\n**[IMG]** ${englishPrompt}` : value;
+            onChange(next);
+          }}
+          className="text-[12px] leading-relaxed text-[var(--text-secondary)] whitespace-pre-wrap font-mono min-h-[48px] max-h-[200px] overflow-auto bg-[var(--bg-page)] border border-[var(--border-default)] focus:border-[var(--gold-primary)] outline-none p-3 rounded resize-y"
+        />
+      </div>
+      {hasImg && (
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-[var(--text-muted)] font-medium">英文提示词</span>
+            <span className="px-1.5 py-0.5 text-[9px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded select-none">[IMG]</span>
+          </div>
+          <AutoResizePromptTextarea
+            value={englishPrompt}
+            onChange={(value) => {
+              const next = chineseDesc ? `${chineseDesc}\n\n**[IMG]** ${value}` : `**[IMG]** ${value}`;
+              onChange(next);
+            }}
+            className="text-[12px] leading-relaxed text-[var(--text-secondary)] whitespace-pre-wrap font-mono min-h-[60px] max-h-[240px] overflow-auto bg-[var(--bg-page)] border border-[var(--border-default)] focus:border-[var(--gold-primary)] outline-none p-3 rounded resize-y"
+          />
+        </div>
+      )}
+      {!hasImg && !chineseDesc && (
+        <AutoResizePromptTextarea
+          value={fullText}
+          placeholder="待生成英文提示词..."
+          onChange={onChange}
+          className="text-[12px] leading-relaxed text-[var(--text-secondary)] whitespace-pre-wrap font-mono min-h-[80px] max-h-[240px] overflow-auto bg-[var(--bg-page)] border border-[var(--border-default)] focus:border-[var(--gold-primary)] outline-none p-3 rounded resize-y"
+        />
+      )}
+    </div>
+  );
+}
+
 function NineGridArea({ episode, ninePrompts, gridImages, compositeUrl, imageDims, onImgLoad, generating, regenerating,
   selectedCell, onSelectCell, onCopy, showDetail, onToggleDetail, upscaling, onUpscale,
   onRegenerate, onPreview, onDownload, isWide, onGoFour, onBatchUpscale, onBatchReUpscale, onEditPrompt,
@@ -8100,6 +8375,19 @@ function NineGridArea({ episode, ninePrompts, gridImages, compositeUrl, imageDim
   const hasAnyRefs = boundRefs.length > 0 || Object.values(cellRefs).some(v => v.length > 0);
   // 动态列数
   const gridCols = actualGridSize <= 4 ? 2 : actualGridSize <= 9 ? 3 : actualGridSize <= 16 ? 4 : 5;
+  const selectedCellAnchorRef = useRef<HTMLDivElement | null>(null);
+  const detailPlacement = usePromptDetailPlacement(showDetail, selectedCellAnchorRef, `${episode}:${cellKeyPrefix}:${selectedCell}:${actualGridSize}`);
+  const detailPanel = showDetail && ninePrompts[selectedCell] ? (
+    <PromptDetailPanel
+      title={`格${selectedCell + 1} 完整提示词`}
+      fullText={ninePrompts[selectedCell]}
+      promptsEdited={promptsEdited}
+      isTranslating={translating?.has(selectedCell)}
+      onTranslate={onTranslate ? () => onTranslate(selectedCell) : undefined}
+      onCopy={() => onCopy(selectedCell)}
+      onChange={(value) => onEditPrompt(selectedCell, value)}
+    />
+  ) : null;
 
   return (
     <div className="flex flex-col gap-4 flex-1">
@@ -8172,6 +8460,8 @@ function NineGridArea({ episode, ninePrompts, gridImages, compositeUrl, imageDim
         </button>
       </div>
 
+      {detailPlacement === "above" && detailPanel}
+
       {/* Composite image preview (before crop completes) */}
       {compositeUrl && !hasCells && (
         <div className="relative border border-[var(--gold-primary)] cursor-pointer overflow-hidden rounded"
@@ -8204,6 +8494,7 @@ function NineGridArea({ episode, ninePrompts, gridImages, compositeUrl, imageDim
 
             return (
               <div key={idx} onClick={() => onSelectCell(idx)}
+                ref={idx === selectedCell ? selectedCellAnchorRef : undefined}
                 className={`group relative bg-[#1a1a1a] overflow-hidden cursor-pointer transition-shadow ${
                   idx === selectedCell ? "ring-2 ring-[var(--gold-primary)] z-10" : "hover:ring-1 hover:ring-[var(--gold-primary)]/50"}`}
                 style={{ aspectRatio: cellAspect }}>
@@ -8352,75 +8643,7 @@ function NineGridArea({ episode, ninePrompts, gridImages, compositeUrl, imageDim
         </div>
       )}
 
-      {/* Prompt Detail Panel — 中英文分离 + [IMG] 保护 */}
-      {showDetail && ninePrompts[selectedCell] && (() => {
-        const fullText = ninePrompts[selectedCell];
-        const imgIdx = fullText.indexOf("**[IMG]**");
-        const chineseDesc = imgIdx >= 0 ? fullText.slice(0, imgIdx).trim() : fullText.trim();
-        const englishPrompt = imgIdx >= 0 ? fullText.slice(imgIdx + "**[IMG]**".length).trim() : "";
-        const hasImg = imgIdx >= 0;
-        const isTranslating = translating?.has(selectedCell);
-        return (
-          <div className="flex flex-col gap-3 p-4 bg-[var(--bg-surface)] border border-[var(--border-default)] rounded">
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] font-semibold text-[var(--text-primary)]">格{selectedCell + 1} 完整提示词</span>
-              <div className="flex items-center gap-2">
-                {promptsEdited && <span className="text-[10px] text-amber-400">● 已编辑（仅本次会话有效）</span>}
-                {onTranslate && (
-                  <button onClick={() => onTranslate(selectedCell)} disabled={isTranslating || !chineseDesc}
-                    className="flex items-center gap-1 px-2 py-1 text-[11px] text-blue-400 border border-blue-400/60 hover:bg-blue-400/10 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed rounded">
-                    {isTranslating ? <Loader size={12} className="animate-spin" /> : <Languages size={12} />} AI翻译
-                  </button>
-                )}
-                <button onClick={() => onCopy(selectedCell)}
-                  className="flex items-center gap-1 px-2 py-1 text-[11px] text-[var(--gold-primary)] border border-[var(--gold-primary)] hover:bg-[var(--gold-transparent)] transition cursor-pointer rounded">
-                  <Copy size={12} /> 复制
-                </button>
-              </div>
-            </div>
-            {/* 操作提示 */}
-            <div className="flex items-center gap-2 px-3 py-2 rounded border border-amber-500/30 bg-amber-500/5">
-              <span className="text-amber-400 text-sm shrink-0">💡</span>
-              <span className="text-[11px] text-amber-300/90 leading-relaxed">在下方输入<strong className="text-amber-200">中文描述</strong>，点击右上角「<strong className="text-[var(--gold-primary)]">AI 翻译</strong>」可自动转为英文提示词提交给图像模型</span>
-            </div>
-            {/* 中文描述（可编辑） */}
-            <div className="flex flex-col gap-1">
-                <span className="text-[10px] text-[var(--text-muted)] font-medium">中文描述</span>
-                <textarea value={chineseDesc}
-                  onChange={(e) => {
-                    const newChinese = e.target.value;
-                    const newFull = hasImg ? `${newChinese}\n\n**[IMG]** ${englishPrompt}` : newChinese;
-                    onEditPrompt(selectedCell, newFull);
-                  }}
-                  rows={2}
-                  placeholder="输入中文分镜描述，点击「AI翻译」可自动生成英文提示词"
-                  className="text-[12px] leading-relaxed text-[var(--text-secondary)] whitespace-pre-wrap font-mono max-h-[150px] min-h-[48px] overflow-auto bg-[var(--bg-page)] border border-[var(--border-default)] focus:border-[var(--gold-primary)] outline-none p-3 rounded resize-y" />
-            </div>
-            {/* [IMG] 标记 + 英文提示词（可编辑） */}
-            {hasImg && (
-              <div className="flex flex-col gap-1">
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] text-[var(--text-muted)] font-medium">英文提示词</span>
-                  <span className="px-1.5 py-0.5 text-[9px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded select-none">[IMG]</span>
-                </div>
-                <textarea value={englishPrompt}
-                  onChange={(e) => {
-                    const newFull = chineseDesc ? `${chineseDesc}\n\n**[IMG]** ${e.target.value}` : `**[IMG]** ${e.target.value}`;
-                    onEditPrompt(selectedCell, newFull);
-                  }}
-                  className="text-[12px] leading-relaxed text-[var(--text-secondary)] whitespace-pre-wrap font-mono max-h-[200px] min-h-[60px] overflow-auto bg-[var(--bg-page)] border border-[var(--border-default)] focus:border-[var(--gold-primary)] outline-none p-3 rounded resize-y" />
-              </div>
-            )}
-            {/* 无 [IMG] 标记时显示整段可编辑 */}
-            {!hasImg && !chineseDesc && (
-              <textarea value={fullText}
-                onChange={(e) => onEditPrompt(selectedCell, e.target.value)}
-                placeholder="待生成英文提示词..."
-                className="text-[12px] leading-relaxed text-[var(--text-secondary)] whitespace-pre-wrap font-mono max-h-[200px] min-h-[80px] overflow-auto bg-[var(--bg-page)] border border-[var(--border-default)] focus:border-[var(--gold-primary)] outline-none p-3 rounded resize-y" />
-            )}
-          </div>
-        );
-      })()}
+      {detailPlacement !== "above" && detailPanel}
     </div>
   );
 }
@@ -8487,6 +8710,19 @@ function FourGridArea({ episode, fourGroups, fourBeat, onBeatChange, gridImages,
   const cellAspect = isWide ? "16/9" : "9/16";
   const [selectedFourCell, setSelectedFourCell] = useState(0);
   const hasAnyRefs = boundRefs.length > 0 || Object.values(cellRefs).some(v => v.length > 0);
+  const selectedFourCellAnchorRef = useRef<HTMLDivElement | null>(null);
+  const detailPlacement = usePromptDetailPlacement(showDetail, selectedFourCellAnchorRef, `${episode}:${fourBeat}:${selectedFourCell}`);
+  const detailPanel = showDetail && scenes[selectedFourCell] ? (
+    <PromptDetailPanel
+      title={`${sceneLabels[selectedFourCell]} 完整提示词`}
+      fullText={scenes[selectedFourCell]}
+      promptsEdited={promptsEdited}
+      isTranslating={translating?.has(selectedFourCell)}
+      onTranslate={onTranslate ? () => onTranslate(selectedFourCell) : undefined}
+      onCopy={() => onCopy(selectedFourCell)}
+      onChange={(value) => onEditPrompt(selectedFourCell, value)}
+    />
+  ) : null;
 
   // Reset selected cell when switching beat groups
   useEffect(() => { setSelectedFourCell(0); }, [fourBeat]);
@@ -8575,6 +8811,8 @@ function FourGridArea({ episode, fourGroups, fourBeat, onBeatChange, gridImages,
         </button>
       </div>
 
+      {detailPlacement === "above" && detailPanel}
+
       {/* Reference image (垫图) indicator */}
       <div className="flex items-center gap-3 px-3 py-2 bg-[var(--bg-surface)] border border-[var(--border-default)] rounded">
         <button onClick={onToggleBaseFrame}
@@ -8657,6 +8895,7 @@ function FourGridArea({ episode, fourGroups, fourBeat, onBeatChange, gridImages,
 
             return (
               <div key={idx} onClick={() => setSelectedFourCell(idx)}
+                ref={idx === selectedFourCell ? selectedFourCellAnchorRef : undefined}
                 className={`group relative bg-[#1a1a1a] overflow-hidden cursor-pointer transition-shadow ${
                   idx === selectedFourCell ? "ring-2 ring-[var(--gold-primary)] z-10" : "hover:ring-1 hover:ring-[var(--gold-primary)]/50"}`}
                 style={{ aspectRatio: cellAspect }}>
@@ -8796,75 +9035,7 @@ function FourGridArea({ episode, fourGroups, fourBeat, onBeatChange, gridImages,
         </div>
       )}
 
-      {/* ★ Four-grid Prompt Detail Panel — 中英文分离 + [IMG] 保护 */}
-      {showDetail && scenes[selectedFourCell] && (() => {
-        const fullText = scenes[selectedFourCell];
-        const imgIdx = fullText.indexOf("**[IMG]**");
-        const chineseDesc = imgIdx >= 0 ? fullText.slice(0, imgIdx).trim() : fullText.trim();
-        const englishPrompt = imgIdx >= 0 ? fullText.slice(imgIdx + "**[IMG]**".length).trim() : "";
-        const hasImg = imgIdx >= 0;
-        const isTranslating = translating?.has(selectedFourCell);
-        return (
-          <div className="flex flex-col gap-3 p-4 bg-[var(--bg-surface)] border border-[var(--border-default)] rounded">
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] font-semibold text-[var(--text-primary)]">{sceneLabels[selectedFourCell]} 完整提示词</span>
-              <div className="flex items-center gap-2">
-                {promptsEdited && <span className="text-[10px] text-amber-400">● 已编辑（仅本次会话有效）</span>}
-                {onTranslate && (
-                  <button onClick={() => onTranslate(selectedFourCell)} disabled={isTranslating || !chineseDesc}
-                    className="flex items-center gap-1 px-2 py-1 text-[11px] text-blue-400 border border-blue-400/60 hover:bg-blue-400/10 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed rounded">
-                    {isTranslating ? <Loader size={12} className="animate-spin" /> : <Languages size={12} />} AI翻译
-                  </button>
-                )}
-                <button onClick={() => onCopy(selectedFourCell)}
-                  className="flex items-center gap-1 px-2 py-1 text-[11px] text-[var(--gold-primary)] border border-[var(--gold-primary)] hover:bg-[var(--gold-transparent)] transition cursor-pointer rounded">
-                  <Copy size={12} /> 复制
-                </button>
-              </div>
-            </div>
-            {/* 操作提示 */}
-            <div className="flex items-center gap-2 px-3 py-2 rounded border border-amber-500/30 bg-amber-500/5">
-              <span className="text-amber-400 text-sm shrink-0">💡</span>
-              <span className="text-[11px] text-amber-300/90 leading-relaxed">在下方输入<strong className="text-amber-200">中文描述</strong>，点击右上角「<strong className="text-[var(--gold-primary)]">AI 翻译</strong>」可自动转为英文提示词提交给图像模型</span>
-            </div>
-            {/* 中文描述（可编辑） */}
-            <div className="flex flex-col gap-1">
-                <span className="text-[10px] text-[var(--text-muted)] font-medium">中文描述</span>
-                <textarea value={chineseDesc}
-                  onChange={(e) => {
-                    const newChinese = e.target.value;
-                    const newFull = hasImg ? `${newChinese}\n\n**[IMG]** ${englishPrompt}` : newChinese;
-                    onEditPrompt(selectedFourCell, newFull);
-                  }}
-                  rows={2}
-                  placeholder="输入中文分镜描述，点击「AI翻译」可自动生成英文提示词"
-                  className="text-[12px] leading-relaxed text-[var(--text-secondary)] whitespace-pre-wrap font-mono max-h-[150px] min-h-[48px] overflow-auto bg-[var(--bg-page)] border border-[var(--border-default)] focus:border-[var(--gold-primary)] outline-none p-3 rounded resize-y" />
-            </div>
-            {/* [IMG] 标记 + 英文提示词（可编辑） */}
-            {hasImg && (
-              <div className="flex flex-col gap-1">
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] text-[var(--text-muted)] font-medium">英文提示词</span>
-                  <span className="px-1.5 py-0.5 text-[9px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded select-none">[IMG]</span>
-                </div>
-                <textarea value={englishPrompt}
-                  onChange={(e) => {
-                    const newFull = chineseDesc ? `${chineseDesc}\n\n**[IMG]** ${e.target.value}` : `**[IMG]** ${e.target.value}`;
-                    onEditPrompt(selectedFourCell, newFull);
-                  }}
-                  className="text-[12px] leading-relaxed text-[var(--text-secondary)] whitespace-pre-wrap font-mono max-h-[200px] min-h-[60px] overflow-auto bg-[var(--bg-page)] border border-[var(--border-default)] focus:border-[var(--gold-primary)] outline-none p-3 rounded resize-y" />
-              </div>
-            )}
-            {/* 无 [IMG] 标记时显示整段可编辑 */}
-            {!hasImg && !chineseDesc && (
-              <textarea value={fullText}
-                onChange={(e) => onEditPrompt(selectedFourCell, e.target.value)}
-                placeholder="待生成英文提示词..."
-                className="text-[12px] leading-relaxed text-[var(--text-secondary)] whitespace-pre-wrap font-mono max-h-[200px] min-h-[80px] overflow-auto bg-[var(--bg-page)] border border-[var(--border-default)] focus:border-[var(--gold-primary)] outline-none p-3 rounded resize-y" />
-            )}
-          </div>
-        );
-      })()}
+      {detailPlacement !== "above" && detailPanel}
 
       {/* Video generation placeholder — future API interface */}
       <div className="flex items-center gap-2 px-3 py-2 bg-[var(--bg-surface)] border border-dashed border-[var(--border-default)] rounded text-[11px] text-[var(--text-muted)]">

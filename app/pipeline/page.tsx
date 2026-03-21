@@ -45,6 +45,13 @@ import { loadScriptsDB, migrateScriptsFromLocalStorage } from "../lib/scriptDB";
 import { kvSet, kvLoad, kvRemove } from "../lib/kvDB";
 import { parseChapters } from "../lib/chapterParser";
 import { archiveCurrentWorkspace, overwriteProject, getActiveProjectId, hasWorkspaceData } from "../lib/projects";
+import {
+  BUILTIN_STYLE_PRESETS,
+  createCustomStylePresetId,
+  loadCustomStylePresetsAsync,
+  saveCustomStylePresets,
+  type StylePreset,
+} from "../lib/stylePresets";
 import AgentStoryboardPanel from "../components/AgentStoryboardPanel";
 import WorkflowReadinessPanel from "../components/WorkflowReadinessPanel";
 
@@ -62,6 +69,20 @@ interface AnalysisResult {
   plan: AnalysisPlanItem[];
   reasoning: string;
 }
+
+interface StylePresetDraft {
+  emoji: string;
+  label: string;
+  prompt: string;
+  previewImage: string;
+}
+
+const EMPTY_STYLE_PRESET_DRAFT: StylePresetDraft = {
+  emoji: "✨",
+  label: "",
+  prompt: "",
+  previewImage: "",
+};
 
 function StatusIcon({ status }: { status: StageState["status"] }) {
   if (status === "done") return <Check size={18} className="text-[var(--gold-primary)]" />;
@@ -422,6 +443,9 @@ export default function PipelinePage() {
       c: consistency.style.colorPalette,
       sp: consistency.style.stylePrompt?.slice(0, 60),
       si: consistency.style.styleImage?.length || 0,
+      sid: consistency.style.stylePresetId || "",
+      sl: consistency.style.stylePresetLabel || "",
+      ss: consistency.style.stylePresetSource || "",
       r: consistency.style.resolution,
       a: consistency.style.aspectRatio,
       chars: consistency.characters.length,
@@ -598,7 +622,14 @@ export default function PipelinePage() {
       fileReader.onload = async (ev) => {
         const dataUrl = ev.target?.result as string;
         updateConsistency((prev) => ({
-          ...prev, style: { ...prev.style, styleImage: dataUrl },
+          ...prev, style: {
+            ...prev.style,
+            styleImage: dataUrl,
+            stylePresetId: "",
+            stylePresetLabel: "",
+            stylePresetEmoji: "",
+            stylePresetSource: undefined,
+          },
         }));
         // Also persist to server file system so studio page stays in sync
         try {
@@ -621,6 +652,107 @@ export default function PipelinePage() {
   const localStylePromptInited = useRef(false);
   const stylePromptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const localStylePromptRef = useRef(""); // tracks latest value for unmount flush
+  const [customStylePresets, setCustomStylePresets] = useState<StylePreset[]>([]);
+  const [showCustomStylePresetForm, setShowCustomStylePresetForm] = useState(false);
+  const [stylePresetDraft, setStylePresetDraft] = useState<StylePresetDraft>(EMPTY_STYLE_PRESET_DRAFT);
+
+  const allStylePresets = useMemo(
+    () => [...BUILTIN_STYLE_PRESETS, ...customStylePresets],
+    [customStylePresets],
+  );
+  const selectedStylePresetId = consistency.style.stylePresetId || "";
+
+  useEffect(() => {
+    let cancelled = false;
+    loadCustomStylePresetsAsync().then((presets) => {
+      if (!cancelled) setCustomStylePresets(presets);
+    }).catch(() => {
+      if (!cancelled) setCustomStylePresets([]);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  function pickImageAsDataUrl(onPicked: (dataUrl: string) => void) {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.onchange = (e: Event) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const dataUrl = ev.target?.result as string;
+        if (dataUrl) onPicked(dataUrl);
+      };
+      reader.readAsDataURL(file);
+    };
+    input.click();
+  }
+
+  const applyStylePreset = useCallback((preset: StylePreset) => {
+    if (stylePromptTimerRef.current) clearTimeout(stylePromptTimerRef.current);
+    localStylePromptInited.current = true;
+    localStylePromptRef.current = preset.prompt;
+    setLocalStylePrompt(preset.prompt);
+    updateConsistency((prev) => ({
+      ...prev,
+      style: {
+        ...prev.style,
+        artStyle: preset.label,
+        styleImage: preset.previewImage,
+        stylePrompt: preset.prompt,
+        stylePresetId: preset.id,
+        stylePresetLabel: preset.label,
+        stylePresetEmoji: preset.emoji,
+        stylePresetSource: preset.source,
+      },
+    }));
+    toast(`已应用风格预设：${preset.emoji} ${preset.label}`, "success");
+  }, [toast, updateConsistency]);
+
+  const handleSaveCustomStylePreset = useCallback(async () => {
+    const label = stylePresetDraft.label.trim();
+    const prompt = stylePresetDraft.prompt.trim();
+    const previewImage = stylePresetDraft.previewImage;
+    if (!label || !prompt || !previewImage) {
+      toast("请先填写预设名称、风格提示词并上传缩略图", "error");
+      return;
+    }
+    const preset: StylePreset = {
+      id: createCustomStylePresetId(),
+      label,
+      emoji: stylePresetDraft.emoji.trim() || "✨",
+      prompt,
+      previewImage,
+      source: "custom",
+    };
+    const next = [preset, ...customStylePresets];
+    setCustomStylePresets(next);
+    await saveCustomStylePresets(next);
+    applyStylePreset(preset);
+    setStylePresetDraft(EMPTY_STYLE_PRESET_DRAFT);
+    setShowCustomStylePresetForm(false);
+    toast(`已新增自定义风格预设：${preset.label}`, "success");
+  }, [applyStylePreset, customStylePresets, stylePresetDraft, toast]);
+
+  const handleDeleteCustomStylePreset = useCallback(async (presetId: string) => {
+    const next = customStylePresets.filter((preset) => preset.id !== presetId);
+    setCustomStylePresets(next);
+    await saveCustomStylePresets(next);
+    if (selectedStylePresetId === presetId) {
+      updateConsistency((prev) => ({
+        ...prev,
+        style: {
+          ...prev.style,
+          stylePresetId: "",
+          stylePresetLabel: "",
+          stylePresetEmoji: "",
+          stylePresetSource: undefined,
+        },
+      }));
+    }
+    toast("已删除自定义风格预设", "success");
+  }, [customStylePresets, selectedStylePresetId, toast, updateConsistency]);
 
   // Sync from consistency → local (on mount or external changes)
   useEffect(() => {
@@ -686,7 +818,14 @@ export default function PipelinePage() {
   // Delete style image handler
   function handleDeleteStyleImage() {
     updateConsistency((prev) => ({
-      ...prev, style: { ...prev.style, styleImage: "" },
+      ...prev, style: {
+        ...prev.style,
+        styleImage: "",
+        stylePresetId: "",
+        stylePresetLabel: "",
+        stylePresetEmoji: "",
+        stylePresetSource: undefined,
+      },
     }));
     // Delete from server (both image and prompt)
     fetch("/api/ref-image?key=style-image", { method: "DELETE" }).catch(() => {});
@@ -1690,6 +1829,125 @@ export default function PipelinePage() {
                 </div>
 
 
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[11px] font-medium text-[var(--text-muted)] uppercase tracking-wider">风格预设</span>
+                  {consistency.style.stylePresetLabel && (
+                    <span className="inline-flex items-center gap-1 px-2 py-1 text-[11px] border border-[var(--gold-primary)]/30 bg-[var(--gold-transparent)] text-[var(--gold-primary)]">
+                      <span>{consistency.style.stylePresetEmoji || "✨"}</span>
+                      <span>{consistency.style.stylePresetLabel}</span>
+                    </span>
+                  )}
+                  <div className="flex-1" />
+                  <button
+                    onClick={() => setShowCustomStylePresetForm((prev) => !prev)}
+                    className="px-3 py-1.5 text-[11px] border border-[var(--border-default)] text-[var(--text-secondary)] hover:border-[var(--gold-primary)] hover:text-[var(--gold-primary)] transition cursor-pointer"
+                  >
+                    {showCustomStylePresetForm ? "收起自定义预设" : "新增自定义预设"}
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 xl:grid-cols-4 gap-2 max-h-[250px] overflow-y-auto pr-1">
+                  {allStylePresets.map((preset) => {
+                    const isActive = selectedStylePresetId === preset.id;
+                    return (
+                      <div key={preset.id} className="relative">
+                        <button
+                          onClick={() => applyStylePreset(preset)}
+                          className={`flex flex-col gap-2 w-full p-2 border text-left transition cursor-pointer ${
+                            isActive
+                              ? "border-[var(--gold-primary)] bg-[var(--gold-transparent)] shadow-[var(--theme-shadow-soft)]"
+                              : "border-[var(--border-default)] bg-[var(--surface-contrast)] hover:border-[var(--gold-primary)]/60"
+                          }`}
+                        >
+                          <div className="relative w-full aspect-[4/3] overflow-hidden border border-[var(--border-default)] bg-[var(--bg-card)]">
+                            <img src={preset.previewImage} alt={preset.label} className="w-full h-full object-cover" />
+                          </div>
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="text-[15px] shrink-0">{preset.emoji}</span>
+                            <span className="text-[12px] font-medium text-[var(--text-primary)] truncate">{preset.label}</span>
+                          </div>
+                          <span className="text-[10px] text-[var(--text-muted)] line-clamp-2">{preset.prompt}</span>
+                        </button>
+                        {preset.source === "custom" && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteCustomStylePreset(preset.id);
+                            }}
+                            className="absolute top-2 right-2 px-1.5 py-0.5 text-[10px] border border-red-400/40 bg-[var(--surface-elevated)] text-red-400 hover:bg-red-400/10 transition cursor-pointer"
+                            title="删除自定义预设"
+                          >
+                            删除
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {showCustomStylePresetForm && (
+                  <div className="grid grid-cols-[180px_1fr] gap-4 p-3 border border-[var(--border-default)] bg-[var(--surface-contrast)]">
+                    <div className="flex flex-col gap-2">
+                      <button
+                        onClick={() => pickImageAsDataUrl((dataUrl) => setStylePresetDraft((prev) => ({ ...prev, previewImage: dataUrl })))}
+                        className="flex flex-col items-center justify-center gap-2 w-full aspect-[4/3] border border-dashed border-[var(--border-default)] hover:border-[var(--gold-primary)] transition cursor-pointer bg-transparent overflow-hidden"
+                      >
+                        {stylePresetDraft.previewImage ? (
+                          <img src={stylePresetDraft.previewImage} alt="自定义风格预设" className="w-full h-full object-cover" />
+                        ) : (
+                          <>
+                            <Upload size={18} className="text-[var(--text-muted)]" />
+                            <span className="text-[12px] text-[var(--text-muted)]">上传风格缩略图</span>
+                          </>
+                        )}
+                      </button>
+                      <span className="text-[10px] text-[var(--text-muted)]">建议使用代表风格的封面图，后续会直接作为风格参考注入。</span>
+                    </div>
+                    <div className="flex flex-col gap-3">
+                      <div className="grid grid-cols-[90px_1fr] gap-3">
+                        <input
+                          value={stylePresetDraft.emoji}
+                          onChange={(e) => setStylePresetDraft((prev) => ({ ...prev, emoji: e.target.value.slice(0, 4) }))}
+                          placeholder="✨"
+                          className="px-3 py-2 bg-[var(--bg-card)] border border-[var(--border-default)] text-[12px] text-[var(--text-primary)] outline-none focus:border-[var(--gold-primary)] transition"
+                        />
+                        <input
+                          value={stylePresetDraft.label}
+                          onChange={(e) => setStylePresetDraft((prev) => ({ ...prev, label: e.target.value }))}
+                          placeholder="预设名称，例如：法式复古、赛博夜雨"
+                          className="px-3 py-2 bg-[var(--bg-card)] border border-[var(--border-default)] text-[12px] text-[var(--text-primary)] outline-none focus:border-[var(--gold-primary)] transition"
+                        />
+                      </div>
+                      <textarea
+                        value={stylePresetDraft.prompt}
+                        onChange={(e) => setStylePresetDraft((prev) => ({ ...prev, prompt: e.target.value }))}
+                        rows={4}
+                        placeholder="输入这套风格的固定提示词。应用后会同步到当前前置设定，并作为风格提示词直接参与生图。"
+                        className="px-3 py-2 bg-[var(--bg-card)] border border-[var(--border-default)] text-[12px] text-[var(--text-secondary)] outline-none focus:border-[var(--gold-primary)] transition resize-y leading-relaxed"
+                      />
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={handleSaveCustomStylePreset}
+                          className="px-3 py-1.5 text-[11px] font-medium border border-[var(--gold-primary)] bg-[var(--gold-transparent)] text-[var(--gold-primary)] hover:brightness-110 transition cursor-pointer"
+                        >
+                          保存并应用
+                        </button>
+                        <button
+                          onClick={() => {
+                            setStylePresetDraft(EMPTY_STYLE_PRESET_DRAFT);
+                            setShowCustomStylePresetForm(false);
+                          }}
+                          className="px-3 py-1.5 text-[11px] border border-[var(--border-default)] text-[var(--text-secondary)] hover:border-[var(--gold-primary)] transition cursor-pointer"
+                        >
+                          取消
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Row 2: Style prompt */}

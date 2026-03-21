@@ -60,6 +60,80 @@ export interface ExtractResult {
 // ── 并发控制 ──
 
 const PHASE2_CONCURRENCY = 5;
+const PHASE1_MAX_SCRIPT_CHARS = 25_000;
+const PHASE1_MAX_OUTPUT_TOKENS = 16_384;
+const PHASE2_RETRY_BASE_DELAY = 1_500;
+const PHASE2_DYNAMIC_DELAY_STEP = 1_200;
+const PHASE2_DYNAMIC_DELAY_MAX = 9_000;
+
+type LlmRequestError = Error & {
+  status?: number;
+  retryAfterMs?: number;
+};
+
+export type TruncateExtractionTextResult = {
+  text: string;
+  truncated: boolean;
+  originalLength: number;
+  truncatedLength: number;
+};
+
+export function truncateExtractionText(
+  input: string,
+  maxChars = PHASE1_MAX_SCRIPT_CHARS,
+): TruncateExtractionTextResult {
+  const normalized = input.trim();
+  if (normalized.length <= maxChars) {
+    return {
+      text: normalized,
+      truncated: false,
+      originalLength: normalized.length,
+      truncatedLength: normalized.length,
+    };
+  }
+
+  const divider = "\n\n【剧本文本过长，已自动省略中段并保留开头与结尾关键信息】\n\n";
+  const available = Math.max(2_000, maxChars - divider.length);
+  const headLength = Math.floor(available * 0.68);
+  const tailLength = available - headLength;
+  const truncated = `${normalized.slice(0, headLength)}${divider}${normalized.slice(-tailLength)}`;
+
+  return {
+    text: truncated,
+    truncated: true,
+    originalLength: normalized.length,
+    truncatedLength: truncated.length,
+  };
+}
+
+function getRetryAfterMs(res: Response): number | undefined {
+  const retryAfter = res.headers.get("retry-after");
+  if (!retryAfter) return undefined;
+
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds)) {
+    return Math.max(0, seconds * 1000);
+  }
+
+  const at = Date.parse(retryAfter);
+  if (Number.isNaN(at)) return undefined;
+  return Math.max(0, at - Date.now());
+}
+
+function isRateLimitLikeError(err: unknown): err is LlmRequestError {
+  const message = (err as Error | undefined)?.message?.toLowerCase() || "";
+  const status = (err as LlmRequestError | undefined)?.status;
+  return (
+    status === 429 ||
+    status === 408 ||
+    status === 503 ||
+    status === 504 ||
+    message.includes("rate limit") ||
+    message.includes("too many requests") ||
+    message.includes("resource exhausted") ||
+    message.includes("quota")
+  );
+}
 
 /** 带并发限制的 Promise.allSettled */
 async function promiseAllWithConcurrency<T>(
@@ -138,7 +212,10 @@ async function callLLMNonStreaming(
 
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
-      throw new Error(`API 错误 (${res.status}): ${errText.slice(0, 300)}`);
+      const err = new Error(`API 错误 (${res.status}): ${errText.slice(0, 300)}`) as LlmRequestError;
+      err.status = res.status;
+      err.retryAfterMs = getRetryAfterMs(res);
+      throw err;
     }
 
     const data = await res.json();
@@ -211,8 +288,9 @@ async function callLLMStreaming(
 
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
-      const err = new Error(`API 错误 (${res.status}): ${errText.slice(0, 300)}`);
-      (err as Error & { status: number }).status = res.status;
+      const err = new Error(`API 错误 (${res.status}): ${errText.slice(0, 300)}`) as LlmRequestError;
+      err.status = res.status;
+      err.retryAfterMs = getRetryAfterMs(res);
       throw err;
     }
 
@@ -374,12 +452,19 @@ export async function twoPhaseExtract(
   const { apiKey, baseUrl, model, isResponsesApi, stylePrompt, onProgress, signal } = config;
 
   const totalStart = Date.now();
+  const truncatedText = truncateExtractionText(text);
+  const phase2AdaptiveDelayMsRef = { current: 0 };
 
   // ═══════ Phase 1: 实体识别 ═══════
   onProgress?.("Phase 1/2 · 正在识别角色/场景/道具...");
-  console.log(`[twoPhaseExtract] Phase 1 开始: model=${model}, textLen=${text.length}`);
+  console.log(
+    `[twoPhaseExtract] Phase 1 开始: model=${model}, textLen=${text.length}, effectiveLen=${truncatedText.truncatedLength}, truncated=${truncatedText.truncated}`,
+  );
+  if (truncatedText.truncated) {
+    onProgress?.(`Phase 1/2 · 剧本文本过长，已自动截断到 ${PHASE1_MAX_SCRIPT_CHARS} 字符以内后继续提取...`);
+  }
 
-  let userContent = "请从以下文本中提取角色、场景、道具信息，直接返回JSON：\n\n" + text;
+  let userContent = "请从以下文本中提取角色、场景、道具信息，直接返回JSON：\n\n" + truncatedText.text;
   if (stylePrompt && stylePrompt.length > 5) {
     userContent = [
       `【风格参考】`,
@@ -396,7 +481,7 @@ export async function twoPhaseExtract(
   try {
     p1Raw = await callLLMStreaming(
       apiKey, baseUrl, model, PHASE1_EXTRACT_PROMPT, userContent,
-      8192, // max_tokens — Phase 1 输出比原来小很多
+      PHASE1_MAX_OUTPUT_TOKENS,
       0,    // temperature — 确定性提取
       isResponsesApi, signal,
     );
@@ -404,7 +489,7 @@ export async function twoPhaseExtract(
     console.warn(`[twoPhaseExtract] Phase 1 流式失败，回退非流式:`, (streamErr as Error).message?.slice(0, 200));
     p1Raw = await callLLMNonStreaming(
       apiKey, baseUrl, model, PHASE1_EXTRACT_PROMPT, userContent,
-      8192, 0, isResponsesApi, signal,
+      PHASE1_MAX_OUTPUT_TOKENS, 0, isResponsesApi, signal,
     );
   }
 
@@ -479,25 +564,36 @@ export async function twoPhaseExtract(
 
   let completed = 0;
 
-  /** 带重试的 Phase 2 单任务执行（最多 3 次尝试，含指数退避） */
+  /** 带重试的 Phase 2 单任务执行（最多 3 次尝试，含动态退避） */
   const PHASE2_MAX_RETRIES = 2; // 最多额外重试 2 次（总共 3 次尝试）
-  const PHASE2_RETRY_BASE_DELAY = 2000; // 首次重试等 2s，第二次等 4s
 
   const taskFns = tasks.map((t, taskIdx) => async () => {
-    // 错峰延迟：每个任务开始前按索引错开 300ms，避免并发请求同时到达触发限流
-    if (taskIdx > 0) {
-      await new Promise(r => setTimeout(r, taskIdx * 300));
-    }
-
     const userMsg = `${stylePrefix}【${t.type === "character" ? "角色" : t.type === "scene" ? "场景" : "道具"}名称】${t.name}\n\n【中文描述】\n${t.description}`;
 
     let lastError: unknown = null;
     for (let attempt = 0; attempt <= PHASE2_MAX_RETRIES; attempt++) {
       try {
+        const staggerDelay = attempt === 0 ? taskIdx * 300 : 0;
+        const adaptiveDelay = phase2AdaptiveDelayMsRef.current;
+        if (staggerDelay > 0 || adaptiveDelay > 0) {
+          const waitMs = staggerDelay + adaptiveDelay;
+          console.log(
+            `[twoPhaseExtract] Phase 2 错峰/动态延迟: ${t.type}「${t.name}」 attempt=${attempt} wait=${waitMs}ms (stagger=${staggerDelay} adaptive=${adaptiveDelay})`,
+          );
+          await new Promise(r => setTimeout(r, waitMs));
+        }
+
         if (attempt > 0) {
-          const delay = PHASE2_RETRY_BASE_DELAY * Math.pow(2, attempt - 1);
-          console.log(`[twoPhaseExtract] Phase 2 重试 ${attempt}/${PHASE2_MAX_RETRIES}: ${t.type}「${t.name}」 等待 ${delay}ms`);
-          await new Promise(r => setTimeout(r, delay));
+          const rateLimitErr = isRateLimitLikeError(lastError) ? lastError : undefined;
+          const retryAfterMs = rateLimitErr?.retryAfterMs || 0;
+          const dynamicDelay = Math.max(phase2AdaptiveDelayMsRef.current, retryAfterMs);
+          const backoffDelay = PHASE2_RETRY_BASE_DELAY * Math.pow(2, attempt - 1);
+          const jitterDelay = Math.min(600, 120 + taskIdx * 35);
+          const retryDelay = dynamicDelay + backoffDelay + jitterDelay;
+          console.log(
+            `[twoPhaseExtract] Phase 2 重试 ${attempt}/${PHASE2_MAX_RETRIES}: ${t.type}「${t.name}」 等待 ${retryDelay}ms (dynamic=${dynamicDelay} backoff=${backoffDelay} jitter=${jitterDelay})`,
+          );
+          await new Promise(r => setTimeout(r, retryDelay));
         }
 
         const promptText = await callLLMNonStreaming(
@@ -513,6 +609,10 @@ export async function twoPhaseExtract(
           console.warn(`[twoPhaseExtract] Phase 2 [attempt ${attempt}]: ${t.type}「${t.name}」返回空内容，将重试`);
           lastError = new Error("API 返回空内容");
           continue;
+        }
+
+        if (phase2AdaptiveDelayMsRef.current > 0) {
+          phase2AdaptiveDelayMsRef.current = Math.max(0, phase2AdaptiveDelayMsRef.current - 300);
         }
 
         // 解析 Phase 2 返回的 JSON（含 prompt + description）
@@ -544,6 +644,16 @@ export async function twoPhaseExtract(
         lastError = err;
         const errMsg = (err as Error).message?.slice(0, 200) || String(err);
         console.warn(`[twoPhaseExtract] Phase 2 [attempt ${attempt}/${PHASE2_MAX_RETRIES}]: ${t.type}「${t.name}」失败: ${errMsg}`);
+        if (isRateLimitLikeError(err)) {
+          const retryAfterMs = err.retryAfterMs || 0;
+          phase2AdaptiveDelayMsRef.current = Math.min(
+            PHASE2_DYNAMIC_DELAY_MAX,
+            Math.max(phase2AdaptiveDelayMsRef.current + PHASE2_DYNAMIC_DELAY_STEP, retryAfterMs),
+          );
+          console.warn(
+            `[twoPhaseExtract] Phase 2 动态延迟提升到 ${phase2AdaptiveDelayMsRef.current}ms（status=${err.status ?? "unknown"}）`,
+          );
+        }
         // 如果是取消信号，立即停止重试
         if (signal?.aborted) throw err;
       }

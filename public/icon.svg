@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <!-- 金色渐变 — 飞彩经典色 -->
+    <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#E8D48A"/>
+      <stop offset="50%" stop-color="#C9A962"/>
+      <stop offset="100%" stop-color="#A8873A"/>
+    </linearGradient>
+    <!-- 背景微光渐变 -->
+    <radialGradient id="glow" cx="50%" cy="45%" r="50%">
+      <stop offset="0%" stop-color="#1A1A1A"/>
+      <stop offset="100%" stop-color="#0A0A0A"/>
+    </radialGradient>
+    <!-- 外框金边渐变 -->
+    <linearGradient id="border-gold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#C9A962" stop-opacity="0.8"/>
+      <stop offset="50%" stop-color="#E8D48A" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#A8873A" stop-opacity="0.8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 圆角矩形背景 -->
+  <rect x="4" y="4" width="248" height="248" rx="40" ry="40" fill="url(#glow)"/>
+
+  <!-- 金色边框 -->
+  <rect x="4" y="4" width="248" height="248" rx="40" ry="40" fill="none" stroke="url(#border-gold)" stroke-width="3"/>
+
+  <!-- 内框装饰线 -->
+  <rect x="18" y="18" width="220" height="220" rx="30" ry="30" fill="none" stroke="#C9A962" stroke-width="0.5" stroke-opacity="0.25"/>
+
+  <!-- "飞" 字 — 居中放置，使用金色渐变 -->
+  <text x="128" y="170" text-anchor="middle" font-family="'KaiTi','STKaiti','楷体','SimSun','serif'" font-size="160" font-weight="bold" fill="url(#gold)" letter-spacing="-4">飞</text>
+
+  <!-- 底部微光装饰 -->
+  <ellipse cx="128" cy="210" rx="60" ry="4" fill="#C9A962" fill-opacity="0.15"/>
+</svg>

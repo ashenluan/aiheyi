@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { writeFileSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import { getBaseOutputDir } from "@/app/lib/paths";
-import { twoPhaseExtract, type TwoPhaseConfig } from "@/app/lib/twoPhaseExtract";
+import { truncateExtractionText, twoPhaseExtract, type TwoPhaseConfig } from "@/app/lib/twoPhaseExtract";
 import { buildSinglePassCharacterRules, buildSinglePassSceneRules, buildSinglePassPropRules } from "@/app/lib/refSheetPrompts";
 
 export const dynamic = "force-dynamic";
@@ -10,7 +10,7 @@ export const maxDuration = 300; // 5 分钟 — 匹配前端 EXTRACT_TIMEOUT_MS�
 
 // Single-pass extraction prompt — NOT the interactive two-phase template file
 // Exported so /api/prompts can serve it as the default extract prompt for the editor UI
-export const SINGLE_PASS_EXTRACT_PROMPT = [
+const SINGLE_PASS_EXTRACT_PROMPT = [
   "# Role",
   "你是一位顶级好莱坞概念美术指导兼 AI 绘画提示词大师。你擅长从CG电影、游戏原画、概念设计的角度拆解视觉元素，并为每个元素生成**专业级规范设定图页面（Specification Sheet）**的英文 Prompt。",
   "",
@@ -154,7 +154,8 @@ export async function POST(request: Request) {
     // Build user message, optionally prepending style reference
     // Send full text to LLM — modern models (Gemini 2.5 Pro, Qwen3-Max) support 128K+ context.
     // Truncating to 8K chars would lose critical plot details needed for accurate extraction.
-    let userContent = "请从以下文本中提取角色、场景、道具信息，直接返回JSON：\n\n" + text;
+    const truncatedText = truncateExtractionText(text);
+    let userContent = "请从以下文本中提取角色、场景、道具信息，直接返回JSON：\n\n" + truncatedText.text;
     if (stylePrompt && typeof stylePrompt === "string" && stylePrompt.length > 5) {
       userContent = [
         `【风格参考 — 所有prompt都必须融入以下风格关键词以保持全局一致性】`,
@@ -163,6 +164,9 @@ export async function POST(request: Request) {
         ``,
         userContent,
       ].join("\n");
+    }
+    if (truncatedText.truncated) {
+      console.log(`[extract] SINGLE-PASS 文本过长，已截断: original=${truncatedText.originalLength}, effective=${truncatedText.truncatedLength}`);
     }
 
     const requestMessages = [

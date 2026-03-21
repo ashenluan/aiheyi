@@ -8,6 +8,7 @@
  */
 
 import { getActionsForAgent, buildActionSchemaText } from "./actions";
+import { STORYBOARD_EXCLUSION_TAGS, STORYBOARD_STRICT_TEXT_BAN } from "../routePromptConstants";
 
 // ══════════════════════════════════════════════════════════
 // 导演编排器（Director）— 解析意图，调度子智能体
@@ -141,7 +142,7 @@ export function buildShotAgentPrompt(): string {
 - 中文分镜描述 → 英文AI生图提示词
 - 保持视觉信息完整，不添加不删除
 - 人名用拼音（叶云 → Ye Yun）
-- 固定添加末尾标签：no timecode, no subtitles
+- 固定添加末尾标签：${STORYBOARD_EXCLUSION_TAGS}.${STORYBOARD_STRICT_TEXT_BAN}
 
 ## 5. 运镜/动态提示词
 - 为图生视频设计运镜方案
@@ -228,7 +229,7 @@ export function buildImageAgentPrompt(): string {
 # 图片质量自查清单
 - □ 人物面部清晰完整（无变形、无融合）
 - □ 手指数量正确（没有6指、融合指）
-- □ 文字标签清晰可辨
+- □ 画面中不出现任何可读文字、字幕、气泡字或 UI 文本
 - □ 风格与参考图一致
 - □ 构图符合分镜设计
 - □ 光影逻辑正确

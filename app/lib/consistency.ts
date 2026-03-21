@@ -9,6 +9,12 @@ export interface CharacterRef {
   aliases?: string[]; // Alternative names/synonyms for smart matching
   referenceImage?: string; // URL or data URI
   prompt?: string; // English prompt for MJ/SD (from extraction)
+  /** 多状态角色分组 ID；同组角色共用同一基础外观 */
+  groupId?: string;
+  /** 分组基础名，例如「林骁」 */
+  groupBase?: string;
+  /** 子状态名，例如「常态 / 觉醒态」 */
+  subType?: string;
 }
 
 export interface SceneRef {
@@ -38,6 +44,10 @@ export interface StyleConfig {
   additionalNotes: string;
   styleImage?: string; // User-uploaded style reference image (URL or data URI)
   stylePrompt?: string; // AI-identified style prompt from the uploaded image
+  stylePresetId?: string;
+  stylePresetLabel?: string;
+  stylePresetEmoji?: string;
+  stylePresetSource?: "builtin" | "custom";
   styleLocked?: boolean; // 🔒 When true, AI extraction / style analysis will NOT overwrite style fields
 }
 
@@ -46,6 +56,38 @@ export interface ConsistencyProfile {
   scenes: SceneRef[];
   props: PropRef[];
   style: StyleConfig;
+}
+
+function normalizeGroupToken(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, "-");
+}
+
+export function deriveCharacterGrouping(name: string): Pick<CharacterRef, "groupId" | "groupBase" | "subType"> {
+  const trimmed = (name || "").trim();
+  if (!trimmed.includes("·")) return {};
+  const [base, ...rest] = trimmed.split("·");
+  const groupBase = base?.trim() || "";
+  const subType = rest.join("·").trim();
+  if (!groupBase || !subType) return {};
+  return {
+    groupBase,
+    subType,
+    groupId: `char-group:${normalizeGroupToken(groupBase)}`,
+  };
+}
+
+export function normalizeCharacterRef(item: CharacterRef): CharacterRef {
+  const derived = deriveCharacterGrouping(item.name);
+  return {
+    ...item,
+    groupId: item.groupId || derived.groupId,
+    groupBase: item.groupBase || derived.groupBase,
+    subType: item.subType || derived.subType,
+  };
+}
+
+export function normalizeCharacterList(items: CharacterRef[]): CharacterRef[] {
+  return (items || []).map(normalizeCharacterRef);
 }
 
 const STORAGE_KEY = "feicai-consistency";
@@ -75,7 +117,7 @@ export function loadConsistency(): ConsistencyProfile {
       return {
         ...defaults,
         ...parsed,
-        characters: parsed.characters || defaults.characters,
+        characters: normalizeCharacterList(parsed.characters || defaults.characters),
         scenes: parsed.scenes || defaults.scenes,
         props: parsed.props || defaults.props,
         style: { ...defaults.style, ...parsed.style },
@@ -98,7 +140,7 @@ export async function loadConsistencyAsync(): Promise<ConsistencyProfile> {
       return {
         ...defaults,
         ...parsed,
-        characters: parsed.characters || defaults.characters,
+        characters: normalizeCharacterList(parsed.characters || defaults.characters),
         scenes: parsed.scenes || defaults.scenes,
         props: parsed.props || defaults.props,
         style: { ...defaults.style, ...parsed.style },
@@ -159,7 +201,7 @@ export async function saveConsistency(profile: ConsistencyProfile) {
  * 内部逻辑：加载当前 profile → 合并提取数据 → 保存回 KV。
  */
 export async function persistExtractResult(data: {
-  characters?: { name: string; description: string; prompt?: string; aliases?: string[] }[];
+  characters?: { name: string; description: string; prompt?: string; aliases?: string[]; groupId?: string; groupBase?: string; subType?: string }[];
   scenes?: { name: string; description: string; prompt?: string; aliases?: string[] }[];
   props?: { name: string; description: string; prompt?: string; aliases?: string[] }[];
   style?: { artStyle?: string; colorPalette?: string; timeSetting?: string };
@@ -168,9 +210,9 @@ export async function persistExtractResult(data: {
     const current = await loadConsistencyAsync();
 
     // 智能追加合并：按名称模糊匹配已有条目，保留参考图，★ 保留未匹配的已有条目（防止丢失手动添加的数据和参考图）
-    function mergeItems<T extends { id: string; name: string; referenceImage?: string; prompt?: string; aliases?: string[] }>(
+    function mergeItems<T extends { id: string; name: string; referenceImage?: string; prompt?: string; aliases?: string[]; groupId?: string; groupBase?: string; subType?: string }>(
       existing: T[],
-      extracted: { name: string; description: string; prompt?: string; aliases?: string[] }[],
+      extracted: { name: string; description: string; prompt?: string; aliases?: string[]; groupId?: string; groupBase?: string; subType?: string }[],
       idPrefix: string
     ): T[] {
       const matchedExistingIds = new Set<string>();
@@ -190,6 +232,7 @@ export async function persistExtractResult(data: {
           return longer.includes(shorter) && shorter.length >= longer.length * 0.3;
         }) : undefined;
         if (matched) matchedExistingIds.add(matched.id);
+        const grouping = idPrefix === "char" ? deriveCharacterGrouping(newItem.name) : {};
         return {
           id: matched?.id || `${idPrefix}-${Date.now()}-${i}`,
           name: newItem.name,
@@ -197,6 +240,9 @@ export async function persistExtractResult(data: {
           prompt: newItem.prompt || "",
           aliases: newItem.aliases || [],
           referenceImage: matched?.referenceImage || undefined,
+          groupId: matched?.groupId || newItem.groupId || grouping.groupId,
+          groupBase: matched?.groupBase || newItem.groupBase || grouping.groupBase,
+          subType: matched?.subType || newItem.subType || grouping.subType,
         } as unknown as T;
       });
       // ★ 保留未被匹配的已有条目（用户手动添加的角色/场景/道具 + 之前提取的未在新提取中出现的条目）
@@ -205,7 +251,7 @@ export async function persistExtractResult(data: {
     }
 
     const updated: ConsistencyProfile = { ...current };
-    if (data.characters?.length) updated.characters = mergeItems(current.characters, data.characters, "char");
+    if (data.characters?.length) updated.characters = normalizeCharacterList(mergeItems(current.characters, data.characters, "char"));
     if (data.scenes?.length) updated.scenes = mergeItems(current.scenes, data.scenes, "scene");
     if (data.props?.length) updated.props = mergeItems(current.props, data.props, "prop");
     if (data.style && !updated.style.styleLocked) {
@@ -270,6 +316,9 @@ export function buildConsistencyContext(profile: ConsistencyProfile): string {
   parts.push("\n【整体风格要求】");
   parts.push(`- 画幅：${profile.style.aspectRatio}`);
   parts.push(`- 分辨率：${profile.style.resolution || "4K"}`);
+  if (profile.style.stylePresetLabel) {
+    parts.push(`- 风格预设：${profile.style.stylePresetEmoji || ""}${profile.style.stylePresetLabel}`);
+  }
   if (profile.style.stylePrompt) {
     // stylePrompt may be JSON string — parse and format
     try {
@@ -603,6 +652,7 @@ export interface SystemPrompts {
   fourGridGem: string;
   styleAnalyze: string;
   upscale: string;
+  directorAgent: string;
   [key: string]: string;
 }
 
@@ -612,6 +662,7 @@ export const DEFAULT_PROMPTS: SystemPrompts = {
   fourGridGem: "",
   styleAnalyze: "",
   upscale: "",
+  directorAgent: "",
 };
 
 export function loadSystemPrompts(): SystemPrompts {

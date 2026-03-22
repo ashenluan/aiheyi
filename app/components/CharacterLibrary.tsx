@@ -102,6 +102,13 @@ interface CharacterLibraryProps {
   currentConsistency: ConsistencyProfile;
 }
 
+interface SmartEntity {
+  type: TabKey;
+  name: string;
+  description?: string;
+  aliases?: string[];
+}
+
 // ─── 收藏持久化 ───
 
 const FAVORITES_KEY = "feicai-library-favorites";
@@ -589,70 +596,160 @@ export default function CharacterLibrary({
 
   // ── ★ 一键智能匹配：扫描当前一致性的角色/场景/道具名，匹配归档项目中同名且有图的条目 ──
   const [smartMatching, setSmartMatching] = useState(false);
+  const [smartMatchSummary, setSmartMatchSummary] = useState("");
+
+  const collectCurrentEntities = useCallback((): SmartEntity[] => {
+    const entities: SmartEntity[] = [];
+    for (const c of currentConsistency.characters || []) {
+      entities.push({ type: "character", name: c.name, description: c.description, aliases: c.aliases });
+    }
+    for (const s of currentConsistency.scenes || []) {
+      entities.push({ type: "scene", name: s.name, description: s.description, aliases: s.aliases });
+    }
+    for (const p of currentConsistency.props || []) {
+      entities.push({ type: "prop", name: p.name, description: p.description, aliases: p.aliases });
+    }
+    return entities.filter((entity) => entity.name?.trim());
+  }, [currentConsistency]);
+
+  const findLocalProjectMatch = useCallback((entity: SmartEntity, usedKeys: Set<string>) => {
+    if (!currentProject?.loaded) return null;
+    for (const item of currentProject.items) {
+      if (usedKeys.has(item.key)) continue;
+      if (!item.imageUrl) continue;
+      if (item.type !== entity.type) continue;
+
+      let matched = namesMatch(entity.name, item.name);
+      if (!matched && entity.aliases) {
+        for (const alias of entity.aliases) {
+          if (namesMatch(alias, item.name)) { matched = true; break; }
+        }
+      }
+      if (!matched && item.aliases) {
+        for (const alias of item.aliases) {
+          if (namesMatch(entity.name, alias)) { matched = true; break; }
+        }
+      }
+      if (matched) {
+        return item;
+      }
+    }
+    return null;
+  }, [currentProject]);
+
+  const findApiProjectMatch = useCallback(async (entity: SmartEntity, usedKeys: Set<string>) => {
+    if (!currentProject?.loaded) return null;
+
+    const typedItems = currentProject.items.filter((item) => item.type === entity.type && item.imageUrl);
+    if (typedItems.length === 0) return null;
+
+    const payloadItems = typedItems.map((item) => ({
+      id: item.key,
+      name: item.name,
+      description: item.description,
+      aliases: item.aliases,
+    }));
+
+    const text = [entity.name, ...(entity.aliases || []), entity.description || ""]
+      .filter(Boolean)
+      .join("，");
+
+    const body = {
+      text,
+      limit: 5,
+      characters: entity.type === "character" ? payloadItems : [],
+      scenes: entity.type === "scene" ? payloadItems : [],
+      props: entity.type === "prop" ? payloadItems : [],
+    };
+
+    try {
+      const res = await fetch("/api/entity-match", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({})) as {
+        error?: string;
+        characters?: Array<{ id: string; score: number }>;
+        scenes?: Array<{ id: string; score: number }>;
+        props?: Array<{ id: string; score: number }>;
+      };
+      if (!res.ok) {
+        throw new Error(data.error || "智能匹配失败");
+      }
+
+      const resultKey = entity.type === "character" ? "characters" : entity.type === "scene" ? "scenes" : "props";
+      const matches = Array.isArray(data[resultKey]) ? data[resultKey]! : [];
+      const best = matches.find((match) => !usedKeys.has(match.id) && match.score >= 0.78);
+      if (!best) return null;
+      return typedItems.find((item) => item.key === best.id) || null;
+    } catch (error) {
+      console.warn("[CharacterLibrary] entity-match 调用失败:", error);
+      return null;
+    }
+  }, [currentProject]);
+
+  const buildSmartImportPlan = useCallback(async () => {
+    const entities = collectCurrentEntities();
+    const matchedKeys = new Set<string>();
+    const importItems: ImportItem[] = [];
+    let apiMatches = 0;
+    let localMatches = 0;
+
+    for (const entity of entities) {
+      let item = await findApiProjectMatch(entity, matchedKeys);
+      let strategy: "ai" | "local" | null = item ? "ai" : null;
+      if (!item) {
+        item = findLocalProjectMatch(entity, matchedKeys);
+        strategy = item ? "local" : null;
+      }
+      if (!item || !item.imageUrl) continue;
+
+      matchedKeys.add(item.key);
+      if (strategy === "ai") apiMatches += 1;
+      if (strategy === "local") localMatches += 1;
+      importItems.push({
+        type: item.type as "character" | "scene" | "prop",
+        name: item.name,
+        description: item.description || "",
+        prompt: item.prompt,
+        imageDataUrl: item.imageUrl,
+        sourceKey: item.key,
+        fromArchive: true,
+      });
+    }
+
+    return {
+      entitiesCount: entities.length,
+      matchedKeys,
+      importItems,
+      apiMatches,
+      localMatches,
+    };
+  }, [collectCurrentEntities, findApiProjectMatch, findLocalProjectMatch]);
 
   const handleSmartMatch = useCallback(async () => {
     if (!currentProject?.loaded) return;
     setSmartMatching(true);
 
     try {
-      // 收集当前一致性中所有实体名（分类型）
-      const currentEntities: { type: TabKey; name: string; aliases?: string[]; hasImage: boolean }[] = [];
-      for (const c of currentConsistency.characters || []) {
-        currentEntities.push({ type: "character", name: c.name, aliases: c.aliases, hasImage: !!c.referenceImage });
-      }
-      for (const s of currentConsistency.scenes || []) {
-        currentEntities.push({ type: "scene", name: s.name, aliases: s.aliases, hasImage: !!s.referenceImage });
-      }
-      for (const p of currentConsistency.props || []) {
-        currentEntities.push({ type: "prop", name: p.name, aliases: p.aliases, hasImage: !!p.referenceImage });
-      }
-
-      // 在归档项目 items 中匹配（只要名称匹配且有图片）
-      const matchedKeys = new Set<string>();
-      const matchedNames: string[] = [];
-
-      for (const entity of currentEntities) {
-        for (const item of currentProject.items) {
-          if (matchedKeys.has(item.key)) continue;
-          if (!item.imageUrl) continue; // 无图片的不匹配
-          // 类型约束：角色只匹配角色，场景只匹配场景
-          if (item.type !== entity.type) continue;
-
-          // 正向：当前实体名/别名 → 归档项目名
-          let matched = namesMatch(entity.name, item.name);
-          if (!matched && entity.aliases) {
-            for (const alias of entity.aliases) {
-              if (namesMatch(alias, item.name)) { matched = true; break; }
-            }
-          }
-          // 反向：归档项目别名 → 当前实体名
-          if (!matched && item.aliases) {
-            for (const alias of item.aliases) {
-              if (namesMatch(entity.name, alias)) { matched = true; break; }
-            }
-          }
-
-          if (matched) {
-            matchedKeys.add(item.key);
-            matchedNames.push(item.name);
-          }
-        }
-      }
-
-      if (matchedKeys.size > 0) {
+      const plan = await buildSmartImportPlan();
+      if (plan.matchedKeys.size > 0) {
         // 自动选中匹配项
-        setSelected(matchedKeys);
-        console.log(`[SmartMatch] 匹配到 ${matchedKeys.size} 项: ${matchedNames.join(", ")}`);
+        setSelected(plan.matchedKeys);
+        setSmartMatchSummary(`已预选 ${plan.matchedKeys.size} 项，AI 命中 ${plan.apiMatches} 项，本地回退 ${plan.localMatches} 项`);
+        console.log(`[SmartMatch] 匹配到 ${plan.matchedKeys.size} 项`);
       } else {
         // 无匹配：提示用户
         setSelected(new Set());
+        setSmartMatchSummary(`未找到可导入的匹配项（当前工作台共 ${plan.entitiesCount} 个实体）`);
       }
 
-      return matchedKeys.size;
+      return plan.matchedKeys.size;
     } finally {
       setSmartMatching(false);
     }
-  }, [currentProject, currentConsistency]);
+  }, [buildSmartImportPlan, currentProject]);
 
   // ── 一键智能导入（匹配 + 立即导入） ──
   const handleSmartImport = useCallback(async () => {
@@ -660,68 +757,21 @@ export default function CharacterLibrary({
     setSmartMatching(true);
 
     try {
-      // 收集当前一致性中所有实体名
-      const currentEntities: { type: TabKey; name: string; aliases?: string[] }[] = [];
-      for (const c of currentConsistency.characters || []) {
-        currentEntities.push({ type: "character", name: c.name, aliases: c.aliases });
-      }
-      for (const s of currentConsistency.scenes || []) {
-        currentEntities.push({ type: "scene", name: s.name, aliases: s.aliases });
-      }
-      for (const p of currentConsistency.props || []) {
-        currentEntities.push({ type: "prop", name: p.name, aliases: p.aliases });
-      }
+      const plan = await buildSmartImportPlan();
 
-      const importItems: ImportItem[] = [];
-      const importedKeys = new Set<string>();
-
-      for (const entity of currentEntities) {
-        for (const item of currentProject.items) {
-          if (importedKeys.has(item.key)) continue;
-          if (!item.imageUrl) continue;
-          if (item.type === "style") continue;
-          // 类型约束：角色只匹配角色，场景只匹配场景
-          if (item.type !== entity.type) continue;
-
-          // 正向：当前实体名/别名 → 归档项目名
-          let matched = namesMatch(entity.name, item.name);
-          if (!matched && entity.aliases) {
-            for (const alias of entity.aliases) {
-              if (namesMatch(alias, item.name)) { matched = true; break; }
-            }
-          }
-          // 反向：归档项目别名 → 当前实体名
-          if (!matched && item.aliases) {
-            for (const alias of item.aliases) {
-              if (namesMatch(entity.name, alias)) { matched = true; break; }
-            }
-          }
-
-          if (matched) {
-            importedKeys.add(item.key);
-            importItems.push({
-              type: item.type as "character" | "scene" | "prop",
-              name: item.name,
-              description: item.description || "",
-              prompt: item.prompt,
-              imageDataUrl: item.imageUrl,
-              sourceKey: item.key,
-              fromArchive: true,
-            });
-          }
-        }
-      }
-
-      if (importItems.length > 0) {
-        onImport(importItems);
+      if (plan.importItems.length > 0) {
+        setSmartMatchSummary(`已导入 ${plan.importItems.length} 项，AI 命中 ${plan.apiMatches} 项，本地回退 ${plan.localMatches} 项`);
+        onImport(plan.importItems);
         onClose();
+      } else {
+        setSmartMatchSummary(`未找到可导入的匹配项（当前工作台共 ${plan.entitiesCount} 个实体）`);
       }
 
-      return importItems.length;
+      return plan.importItems.length;
     } finally {
       setSmartMatching(false);
     }
-  }, [currentProject, currentConsistency, onImport, onClose]);
+  }, [buildSmartImportPlan, currentProject, onImport, onClose]);
 
   // ── 图片预览 ──
   const [previewImage, setPreviewImage] = useState<{ url: string; name: string } | null>(null);
@@ -1026,24 +1076,38 @@ export default function CharacterLibrary({
             ) : favoritesMode ? (
               <span>从收藏中选择要导入的参考图</span>
             ) : (
-              <span>点击图片选择要导入的参考图</span>
+              <span>{smartMatchSummary || "点击图片选择要导入的参考图"}</span>
             )}
           </div>
           <div className="flex items-center gap-2">
             {/* ★ 一键智能匹配按钮（仅归档项目可用） */}
             {!favoritesMode && currentProject?.loaded && currentProject.source !== "current" && (
-              <button
-                onClick={handleSmartImport}
-                disabled={smartMatching || !currentProject}
-                className="flex items-center gap-1.5 px-4 py-1.5 text-[11px] font-medium text-[var(--gold-primary)] border border-[var(--gold-primary)]/40 bg-[var(--gold-primary)]/10 rounded hover:bg-[var(--gold-primary)]/20 hover:border-[var(--gold-primary)]/60 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                title="根据当前一致性面板的角色/场景/道具名称，自动匹配归档项目中的同名参考图并一键导入"
-              >
-                {smartMatching ? (
-                  <><Loader size={11} className="animate-spin" /> 匹配中...</>
-                ) : (
-                  <><Sparkles size={11} /> ✦ 智能匹配导入</>
-                )}
-              </button>
+              <>
+                <button
+                  onClick={handleSmartMatch}
+                  disabled={smartMatching || !currentProject}
+                  className="flex items-center gap-1.5 px-4 py-1.5 text-[11px] font-medium text-[var(--text-secondary)] border border-[var(--border-default)] rounded hover:border-[var(--gold-primary)] hover:text-[var(--gold-primary)] transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="根据当前工作台的角色、场景、道具信息进行智能匹配，并先预选结果供你检查"
+                >
+                  {smartMatching ? (
+                    <><Loader size={11} className="animate-spin" /> 匹配中...</>
+                  ) : (
+                    <><Sparkles size={11} /> 智能匹配预选</>
+                  )}
+                </button>
+                <button
+                  onClick={handleSmartImport}
+                  disabled={smartMatching || !currentProject}
+                  className="flex items-center gap-1.5 px-4 py-1.5 text-[11px] font-medium text-[var(--gold-primary)] border border-[var(--gold-primary)]/40 bg-[var(--gold-primary)]/10 rounded hover:bg-[var(--gold-primary)]/20 hover:border-[var(--gold-primary)]/60 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="根据当前工作台的角色、场景、道具信息自动匹配归档项目中的参考图并立即导入"
+                >
+                  {smartMatching ? (
+                    <><Loader size={11} className="animate-spin" /> 匹配中...</>
+                  ) : (
+                    <><Sparkles size={11} /> ✦ 智能匹配导入</>
+                  )}
+                </button>
+              </>
             )}
             {favoritesMode && (
               <button

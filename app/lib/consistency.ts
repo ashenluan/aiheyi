@@ -1,6 +1,7 @@
 // Consistency Control data model and helpers
 
 import { kvLoad, kvSet, kvRemove } from "./kvDB";
+import { buildStyleDatabasePromptParts, buildStyleDatabaseSummary, normalizeLensEffectIds } from "./stylePresets";
 
 export interface CharacterRef {
   id: string;
@@ -40,6 +41,10 @@ export interface StyleConfig {
   colorPalette: string;
   aspectRatio: "16:9" | "9:16";
   resolution: "1K" | "2K" | "4K";
+  visualStyle?: string;
+  qualityPreset?: string;
+  lensEffects?: string[];
+  lightingMood?: string;
   timeSetting: string; // 时代/世界观背景：如 "现代都市"、"古代中国"、"未来太空站"（不含具体时间段，时间由AI逐镜判断）
   additionalNotes: string;
   styleImage?: string; // User-uploaded style reference image (URL or data URI)
@@ -104,6 +109,17 @@ export function isValidImageRef(url?: string): url is string {
   return url.startsWith("data:") || url.startsWith("http") || url.startsWith("/api/");
 }
 
+function normalizeStyleConfig(style?: Partial<StyleConfig>): StyleConfig {
+  const defaults = defaultProfile().style;
+  return {
+    ...defaults,
+    ...style,
+    aspectRatio: style?.aspectRatio === "9:16" ? "9:16" : "16:9",
+    resolution: style?.resolution === "1K" || style?.resolution === "2K" || style?.resolution === "4K" ? style.resolution : defaults.resolution,
+    lensEffects: normalizeLensEffectIds(style?.lensEffects),
+  };
+}
+
 // ── Consistency Profile ──
 
 /** Sync load from localStorage (for useState init / fallback). Will be empty after migration. */
@@ -120,7 +136,7 @@ export function loadConsistency(): ConsistencyProfile {
         characters: normalizeCharacterList(parsed.characters || defaults.characters),
         scenes: parsed.scenes || defaults.scenes,
         props: parsed.props || defaults.props,
-        style: { ...defaults.style, ...parsed.style },
+        style: normalizeStyleConfig(parsed.style),
       };
     }
   } catch {
@@ -143,7 +159,7 @@ export async function loadConsistencyAsync(): Promise<ConsistencyProfile> {
         characters: normalizeCharacterList(parsed.characters || defaults.characters),
         scenes: parsed.scenes || defaults.scenes,
         props: parsed.props || defaults.props,
-        style: { ...defaults.style, ...parsed.style },
+        style: normalizeStyleConfig(parsed.style),
       };
     }
   } catch {
@@ -280,6 +296,10 @@ export function defaultProfile(): ConsistencyProfile {
       colorPalette: "冷蓝过渡到暖金",
       aspectRatio: "16:9",
       resolution: "4K",
+      visualStyle: "",
+      qualityPreset: "",
+      lensEffects: [],
+      lightingMood: "",
       timeSetting: "",
       additionalNotes: "",
     },
@@ -316,6 +336,10 @@ export function buildConsistencyContext(profile: ConsistencyProfile): string {
   parts.push("\n【整体风格要求】");
   parts.push(`- 画幅：${profile.style.aspectRatio}`);
   parts.push(`- 分辨率：${profile.style.resolution || "4K"}`);
+  const styleDatabaseParts = buildStyleDatabasePromptParts(profile.style);
+  for (const part of styleDatabaseParts) {
+    parts.push(`- ${part}`);
+  }
   if (profile.style.stylePresetLabel) {
     parts.push(`- 风格预设：${profile.style.stylePresetEmoji || ""}${profile.style.stylePresetLabel}`);
   }
@@ -652,6 +676,11 @@ export interface SystemPrompts {
   fourGridGem: string;
   styleAnalyze: string;
   upscale: string;
+  restoreStoryboard: string;
+  translateSceneViewPrompt: string;
+  entityMatch: string;
+  gridExpandAgent: string;
+  costumeDesignAgent: string;
   directorAgent: string;
   [key: string]: string;
 }
@@ -662,6 +691,11 @@ export const DEFAULT_PROMPTS: SystemPrompts = {
   fourGridGem: "",
   styleAnalyze: "",
   upscale: "",
+  restoreStoryboard: "",
+  translateSceneViewPrompt: "",
+  entityMatch: "",
+  gridExpandAgent: "",
+  costumeDesignAgent: "",
   directorAgent: "",
 };
 
@@ -935,10 +969,20 @@ export async function exportConsistencyToFile(profile: ConsistencyProfile): Prom
     lines.push("");
 
     // 风格
-    if (profile.style.artStyle || profile.style.colorPalette || profile.style.timeSetting) {
+    if (
+      profile.style.artStyle ||
+      profile.style.colorPalette ||
+      profile.style.timeSetting ||
+      profile.style.visualStyle ||
+      profile.style.qualityPreset ||
+      (profile.style.lensEffects?.length || 0) > 0 ||
+      profile.style.lightingMood
+    ) {
       lines.push(`## 🎨 风格设定`);
       if (profile.style.artStyle) lines.push(`- **画风**：${profile.style.artStyle}`);
       if (profile.style.colorPalette) lines.push(`- **色调**：${profile.style.colorPalette}`);
+      const styleDatabaseSummary = buildStyleDatabaseSummary(profile.style);
+      if (styleDatabaseSummary) lines.push(`- **风格数据库 v2**：${styleDatabaseSummary}`);
       if (profile.style.timeSetting) lines.push(`- **时代背景**：${profile.style.timeSetting}`);
       if (profile.style.stylePrompt) lines.push(`- **风格提示词**：${profile.style.stylePrompt}`);
       lines.push(`- **画幅**：${profile.style.aspectRatio} · ${profile.style.resolution}`);

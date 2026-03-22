@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { X, Check, Image as ImageIcon, User, Mountain, Sword, Info } from "lucide-react";
+import { X, Check, Image as ImageIcon, User, Mountain, Sword, Info, Loader, Sparkles } from "lucide-react";
 import type { ConsistencyProfile } from "../lib/consistency";
 import { collectMatchedReferenceImages, isValidImageRef } from "../lib/consistency";
 
@@ -23,6 +23,7 @@ interface RefItem {
   description: string;
   referenceImage: string;
   isSmartMatch: boolean; // pre-selected by smart matching
+  isEpisodeMatch: boolean; // matched by episode-level AI result
 }
 
 /** Episode-level mention info: which characters/scenes/props appear in current EP prompts */
@@ -30,6 +31,7 @@ export interface EpisodeMentions {
   characters: string[];  // names
   scenes: string[];
   props: string[];
+  source?: "ai" | "prompt";
 }
 
 interface RefBindPanelProps {
@@ -41,6 +43,9 @@ interface RefBindPanelProps {
   promptTexts: string[];       // prompts for smart matching context
   episodeMentions?: EpisodeMentions; // EP-level character/scene/prop mentions
   episodeLabel?: string; // e.g. "EP01"
+  onEntityMatch?: () => void | Promise<void>;
+  entityMatching?: boolean;
+  entityMatchProgress?: string;
   /** Callback returns selected item IDs (NOT URLs) */
   onConfirm: (target: RefBindTarget, selectedIds: string[]) => void;
   onClose: () => void;
@@ -54,11 +59,38 @@ const TAB_ITEMS: { key: TabKey; label: string; icon: typeof User }[] = [
   { key: "prop", label: "道具", icon: Sword },
 ];
 
+function normalizeLoose(value: string) {
+  return value.trim().toLowerCase().replace(/[\s,，。！？、;；:：()（）【】《》〈〉「」『』"'`·•_\-\\/|]+/g, "");
+}
+
+function matchesEpisodeName(itemName: string, names: string[]) {
+  const itemLoose = normalizeLoose(itemName);
+  const itemBase = normalizeLoose(itemName.split(/[·•]/)[0] || itemName);
+  return names.some((name) => {
+    const loose = normalizeLoose(name);
+    const base = normalizeLoose(name.split(/[·•]/)[0] || name);
+    return loose === itemLoose || (base && base === itemBase) || (loose.length >= 2 && itemLoose.includes(loose)) || (itemLoose.length >= 2 && loose.includes(itemLoose));
+  });
+}
+
 // ═══════════════════════════════════════════════════════════
 // RefBindPanel Component — binds by item ID for stability
 // ═══════════════════════════════════════════════════════════
 
-export default function RefBindPanel({ open, target, consistency, currentBindIds, promptTexts, episodeMentions, episodeLabel, onConfirm, onClose }: RefBindPanelProps) {
+export default function RefBindPanel({
+  open,
+  target,
+  consistency,
+  currentBindIds,
+  promptTexts,
+  episodeMentions,
+  episodeLabel,
+  onEntityMatch,
+  entityMatching = false,
+  entityMatchProgress = "",
+  onConfirm,
+  onClose,
+}: RefBindPanelProps) {
   const [activeTab, setActiveTab] = useState<TabKey>("char");
   /** Selected item IDs (not URLs) */
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -83,6 +115,7 @@ export default function RefBindPanel({ open, target, consistency, currentBindIds
           description: c.description,
           referenceImage: c.referenceImage,
           isSmartMatch: smartMatchedUrls.has(c.referenceImage),
+          isEpisodeMatch: matchesEpisodeName(c.name, episodeMentions?.characters || []),
         });
       }
     }
@@ -95,6 +128,7 @@ export default function RefBindPanel({ open, target, consistency, currentBindIds
           description: s.description,
           referenceImage: s.referenceImage,
           isSmartMatch: smartMatchedUrls.has(s.referenceImage),
+          isEpisodeMatch: matchesEpisodeName(s.name, episodeMentions?.scenes || []),
         });
       }
     }
@@ -107,12 +141,13 @@ export default function RefBindPanel({ open, target, consistency, currentBindIds
           description: p.description,
           referenceImage: p.referenceImage,
           isSmartMatch: smartMatchedUrls.has(p.referenceImage),
+          isEpisodeMatch: matchesEpisodeName(p.name, episodeMentions?.props || []),
         });
       }
     }
 
     return items;
-  }, [consistency, promptTexts]);
+  }, [consistency, promptTexts, episodeMentions]);
 
   // Initialize selection ONCE per panel open; skip subsequent re-renders to avoid resetting user edits
   useEffect(() => {
@@ -124,9 +159,14 @@ export default function RefBindPanel({ open, target, consistency, currentBindIds
       // Preserve existing bindings (by ID)
       setSelectedIds(new Set(currentBindIds));
     } else if (currentBindIds === null) {
-      // Never set — smart pre-selection (convert smart-matched items to IDs)
-      const smartIds = allItems.filter((i) => i.isSmartMatch).map((i) => i.id);
-      setSelectedIds(new Set(smartIds));
+      // Never set — prefer AI episode-level results, otherwise fall back to prompt smart matching.
+      const episodeIds = allItems.filter((i) => i.isEpisodeMatch).map((i) => i.id);
+      if (episodeIds.length > 0) {
+        setSelectedIds(new Set(episodeIds));
+      } else {
+        const smartIds = allItems.filter((i) => i.isSmartMatch).map((i) => i.id);
+        setSelectedIds(new Set(smartIds));
+      }
     } else {
       // Explicitly cleared to empty
       setSelectedIds(new Set());
@@ -195,13 +235,38 @@ export default function RefBindPanel({ open, target, consistency, currentBindIds
           </button>
         </div>
 
-        {/* Episode Mentions Info Box */}
-        {episodeMentions && (episodeMentions.characters.length > 0 || episodeMentions.scenes.length > 0 || episodeMentions.props.length > 0) && (
-          <div className="mx-4 mt-3 p-3 bg-[#1e1e2e] border border-[var(--gold-primary)]/30 rounded-lg">
+        <div className="mx-4 mt-3">
+          {onEntityMatch && (
+            <div className="mb-2">
+              <button
+                onClick={() => void onEntityMatch()}
+                disabled={entityMatching}
+                className={`w-full flex items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-medium rounded-lg border transition cursor-pointer ${
+                  entityMatching
+                    ? "bg-[#1a1a2e] border-[var(--gold-primary)]/40 text-[var(--gold-primary)]/70 cursor-wait"
+                    : "bg-[#1a1a2e] border-[var(--gold-primary)]/30 text-[var(--gold-primary)] hover:border-[var(--gold-primary)]/60 hover:bg-[#1e1e35]"
+                }`}
+              >
+                {entityMatching ? <Loader size={13} className="animate-spin" /> : <Sparkles size={13} />}
+                {entityMatching ? (entityMatchProgress || "AI出场匹配中...") : "AI一键匹配出场"}
+              </button>
+              {entityMatching && (
+                <div className="mt-1.5 h-1 bg-[#2a2a2a] rounded-full overflow-hidden">
+                  <div className="h-full w-3/5 bg-[var(--gold-primary)] rounded-full animate-pulse" />
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Episode Mentions Info Box */}
+          {episodeMentions && (episodeMentions.characters.length > 0 || episodeMentions.scenes.length > 0 || episodeMentions.props.length > 0) && (
+            <div className="p-3 bg-[#1e1e2e] border border-[var(--gold-primary)]/30 rounded-lg">
             <div className="flex items-center gap-1.5 mb-1.5">
               <Info size={13} className="text-[var(--gold-primary)] shrink-0" />
               <span className="text-[11px] font-semibold text-[var(--gold-primary)]">
-                {episodeLabel ? `${episodeLabel.toUpperCase()} 本集出场` : "本集出场"}
+                {episodeLabel
+                  ? `${episodeLabel.toUpperCase()} ${episodeMentions.source === "ai" ? "AI出场匹配" : "本集出场"}`
+                  : (episodeMentions.source === "ai" ? "AI出场匹配" : "本集出场")}
               </span>
             </div>
             <div className="flex flex-col gap-1 text-[10px] leading-relaxed">
@@ -233,8 +298,9 @@ export default function RefBindPanel({ open, target, consistency, currentBindIds
                 </div>
               )}
             </div>
-          </div>
-        )}
+            </div>
+          )}
+        </div>
 
         {/* Tabs */}
         <div className="flex items-center gap-0 border-b border-[var(--border-default)]">
@@ -286,7 +352,11 @@ export default function RefBindPanel({ open, target, consistency, currentBindIds
                         </div>
                       )}
                       {/* Smart match badge */}
-                      {item.isSmartMatch && (
+                      {item.isEpisodeMatch ? (
+                        <div className="absolute bottom-1 left-1 px-1.5 py-0.5 bg-[#0A0A0A]/80 text-[8px] text-[var(--gold-primary)] rounded">
+                          {episodeMentions?.source === "ai" ? "AI命中" : "本集出场"}
+                        </div>
+                      ) : item.isSmartMatch && (
                         <div className="absolute bottom-1 left-1 px-1.5 py-0.5 bg-[#0A0A0A]/80 text-[8px] text-[var(--gold-primary)] rounded">
                           智能推荐
                         </div>
@@ -304,7 +374,11 @@ export default function RefBindPanel({ open, target, consistency, currentBindIds
 
         {/* Hint notes */}
         <div className="flex flex-col gap-1 px-5 pt-2.5 text-[10px] text-[var(--text-muted)] leading-relaxed">
-          <span>💡 全局参考图：根据「本集出场」智能推荐绑定，适用于整页所有格子。</span>
+          <span>
+            {"💡 全局参考图：根据「"}
+            {episodeMentions?.source === "ai" ? "AI出场匹配" : "本集出场"}
+            {"」智能推荐绑定，适用于整页所有格子。"}
+          </span>
           <span>💡 单格参考图：需人工识别对应提示词内容，手动绑定最匹配的参考图。</span>
           {selectedIds.size > 5 && (
             <span className="text-amber-400">⚠ 选择大于 5 张参考图会降低图像模型的注意力，一致性大概率无法保持，建议根据当前集数选择参考图。</span>

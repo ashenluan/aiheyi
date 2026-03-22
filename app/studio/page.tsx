@@ -18,7 +18,7 @@ import {
   saveConsistencyImages, restoreConsistencyImagesFromDisk, resolveRefBindIds, itemMatchesPrompt, itemMatchesPromptRelaxed,
   isValidImageRef, exportConsistencyToFile, deriveCharacterGrouping, normalizeCharacterList,
 } from "../lib/consistency";
-import { kvLoad, kvSet, kvKeysByPrefix } from "../lib/kvDB";
+import { kvLoad, kvSet, kvKeysByPrefix, kvRemove, kvRemoveByPrefix } from "../lib/kvDB";
 import { migrateFromLocalStorage } from "../lib/imageDB";
 import { loadGridImageUrlsFromDisk, saveGridImagesToDisk, saveOneGridImageToDisk, gridImageUrl, deleteGridImageFromDisk } from "../lib/gridImageStore";
 import { loadScriptsDB, migrateScriptsFromLocalStorage } from "../lib/scriptDB";
@@ -38,6 +38,14 @@ import type { JimengClientTask } from "../lib/jimeng-image/clientTaskStore";
 import { JIMENG_IMAGE_MODEL_OPTIONS, type JimengImageModelId, type JimengImageResolution } from "../lib/jimeng-image/types";
 import { buildPipelineToStudioChecklist } from "../lib/workflowHandoff";
 import { buildOutputEntries, persistProvenanceManifest, summarizeAssetList } from "../lib/provenance/client";
+import { buildStyleDatabaseSummary } from "../lib/stylePresets";
+import {
+  getEpisodeEntityMatchKey,
+  getEpisodeEntityMatchNames,
+  getEpisodeEntityMatchTotal,
+  type EntityMatchResultSections,
+  type StoredEpisodeEntityMatch,
+} from "../lib/episodeEntityMatch";
 import {
   buildGridImageInstruction,
   buildGridLayoutDiagram,
@@ -213,6 +221,11 @@ function parseFourGridGroups(content: string): string[][] {
     groups.push(scenes);
   }
   return groups;
+}
+
+function getEpisodeSortValue(ep: string) {
+  const match = ep.match(/(\d+)/);
+  return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -940,6 +953,10 @@ export default function StudioPage() {
   const closePreview = useCallback(() => setPreviewImage(null), []);
   const [showCharacterLibrary, setShowCharacterLibrary] = useState(false);
   const [showFusionModal, setShowFusionModal] = useState(false);
+  const [aiEntityMatchByEp, setAiEntityMatchByEp] = useState<Record<string, StoredEpisodeEntityMatch | null>>({});
+  const [aiEntityMatchLoading, setAiEntityMatchLoading] = useState(false);
+  const [aiEntityMatchStatus, setAiEntityMatchStatus] = useState("");
+  const [aiEntityMatchAnalyzedCount, setAiEntityMatchAnalyzedCount] = useState(0);
 
   // ── 图片来源选择器状态（本地上传 / 即梦图库） ──
   const [showImageSourcePicker, setShowImageSourcePicker] = useState(false);
@@ -2351,6 +2368,213 @@ export default function StudioPage() {
     }
   }
 
+  const entityMatchCandidates = useMemo(() => ({
+    characters: consistency.characters.map((item) => ({
+      id: item.id,
+      name: item.name,
+      description: item.description,
+      aliases: item.aliases,
+    })),
+    scenes: consistency.scenes
+      .filter((item) => (item as { subType?: string }).subType !== "scene-view")
+      .map((item) => ({
+        id: item.id,
+        name: item.name,
+        description: item.description,
+        aliases: item.aliases,
+      })),
+    props: consistency.props.map((item) => ({
+      id: item.id,
+      name: item.name,
+      description: item.description,
+      aliases: item.aliases,
+    })),
+  }), [consistency]);
+
+  const refreshAiEntityMatchSummary = useCallback(async () => {
+    try {
+      const keys = await kvKeysByPrefix("feicai-ai-entity-match-");
+      if (!unmountedRef.current) setAiEntityMatchAnalyzedCount(keys.length);
+    } catch {
+      if (!unmountedRef.current) setAiEntityMatchAnalyzedCount(0);
+    }
+  }, []);
+
+  const loadAiEntityMatchForEpisode = useCallback(async (ep: string) => {
+    if (!ep) return;
+    try {
+      const raw = await kvLoad(getEpisodeEntityMatchKey(ep));
+      if (!raw) {
+        setAiEntityMatchByEp((prev) => ({ ...prev, [ep]: null }));
+        return;
+      }
+      const parsed = JSON.parse(raw) as StoredEpisodeEntityMatch;
+      if (!parsed?.result) {
+        setAiEntityMatchByEp((prev) => ({ ...prev, [ep]: null }));
+        return;
+      }
+      setAiEntityMatchByEp((prev) => ({ ...prev, [ep]: parsed }));
+    } catch {
+      setAiEntityMatchByEp((prev) => ({ ...prev, [ep]: null }));
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshAiEntityMatchSummary();
+  }, [refreshAiEntityMatchSummary]);
+
+  useEffect(() => {
+    if (!episode) return;
+    void loadAiEntityMatchForEpisode(episode);
+  }, [episode, loadAiEntityMatchForEpisode]);
+
+  async function analyzeEntityMatchEpisode(epId: string): Promise<StoredEpisodeEntityMatch> {
+    const settings = getSettings();
+    if (!settings["llm-key"]) throw new Error("请先在设置页配置 LLM API Key");
+
+    const candidateTotal = entityMatchCandidates.characters.length + entityMatchCandidates.scenes.length + entityMatchCandidates.props.length;
+    if (candidateTotal === 0) {
+      throw new Error("没有可匹配的角色/场景/道具，请先完成 AI 提取");
+    }
+
+    const raw = await kvLoad(`feicai-smart-nine-prompts-${epId}`);
+    if (!raw) throw new Error("没有可用的分镜数据，请先运行智能分镜流水线");
+
+    const parsed = JSON.parse(raw) as { title?: string; beats?: string[] };
+    if (!Array.isArray(parsed.beats) || parsed.beats.length === 0) {
+      throw new Error("该集没有可分析的智能分镜提示词");
+    }
+
+    const savedPrompts = await loadSystemPromptsAsync();
+    const res = await fetch("/api/entity-match", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        settings,
+        episode: {
+          id: epId,
+          label: parsed.title || epId.toUpperCase(),
+          beats: parsed.beats,
+        },
+        characters: entityMatchCandidates.characters,
+        scenes: entityMatchCandidates.scenes,
+        props: entityMatchCandidates.props,
+        customPrompt: savedPrompts.entityMatch || undefined,
+      }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || `API ${res.status}`);
+    }
+
+    const result: EntityMatchResultSections = {
+      characters: Array.isArray(data.result?.characters) ? data.result.characters : [],
+      scenes: Array.isArray(data.result?.scenes) ? data.result.scenes : [],
+      props: Array.isArray(data.result?.props) ? data.result.props : [],
+    };
+
+    const stored: StoredEpisodeEntityMatch = {
+      episodeId: data.episodeId || epId,
+      episodeLabel: data.episodeLabel || parsed.title || epId.toUpperCase(),
+      matchedAt: new Date().toISOString(),
+      result,
+    };
+
+    await kvSet(getEpisodeEntityMatchKey(epId), JSON.stringify(stored));
+    setAiEntityMatchByEp((prev) => ({ ...prev, [epId]: stored }));
+    return stored;
+  }
+
+  async function handleAnalyzeCurrentEpisode() {
+    if (!episode || aiEntityMatchLoading) return;
+    const taskId = `llm-entity-match-${Date.now()}`;
+    setAiEntityMatchLoading(true);
+    setAiEntityMatchStatus("准备中...");
+    addTask({ id: taskId, type: "llm", label: "AI出场匹配", detail: `分析 ${episode.toUpperCase()}` });
+    try {
+      const stored = await analyzeEntityMatchEpisode(episode);
+      const total = getEpisodeEntityMatchTotal(stored.result);
+      setAiEntityMatchStatus("已完成 1/1 集");
+      toast(`AI 出场匹配完成 ✓ ${stored.episodeLabel}（命中 ${total} 项）`, "success");
+      await refreshAiEntityMatchSummary();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "未知错误";
+      setAiEntityMatchStatus("");
+      toast(`AI 出场匹配失败: ${message}`, "error");
+    } finally {
+      setAiEntityMatchLoading(false);
+      removeTask(taskId);
+    }
+  }
+
+  async function handleAnalyzeAllEpisodes() {
+    if (aiEntityMatchLoading) return;
+    const taskId = `llm-entity-match-all-${Date.now()}`;
+    setAiEntityMatchLoading(true);
+    setAiEntityMatchStatus("准备中...");
+    addTask({ id: taskId, type: "llm", label: "AI出场匹配", detail: "分析所有集" });
+    try {
+      const keys = await kvKeysByPrefix("feicai-smart-nine-prompts-");
+      const episodeIds = Array.from(new Set(keys
+        .map((key) => key.replace("feicai-smart-nine-prompts-", ""))
+        .filter(Boolean)))
+        .sort((a, b) => getEpisodeSortValue(a) - getEpisodeSortValue(b) || a.localeCompare(b));
+
+      if (episodeIds.length === 0) {
+        throw new Error("没有可用的分镜数据，请先运行智能分镜流水线");
+      }
+
+      let success = 0;
+      let failed = 0;
+
+      for (let index = 0; index < episodeIds.length; index++) {
+        const epId = episodeIds[index];
+        const progressLabel = `已完成 ${index}/${episodeIds.length} 集`;
+        setAiEntityMatchStatus(progressLabel);
+        updateTask(taskId, { detail: progressLabel });
+        try {
+          await analyzeEntityMatchEpisode(epId);
+          success += 1;
+        } catch (error) {
+          failed += 1;
+          console.warn(`[AI Entity Match] ${epId} failed:`, error);
+        }
+      }
+
+      const doneLabel = `已完成 ${success}/${episodeIds.length} 集`;
+      setAiEntityMatchStatus(doneLabel);
+      updateTask(taskId, { detail: doneLabel });
+      await refreshAiEntityMatchSummary();
+      if (episode) await loadAiEntityMatchForEpisode(episode);
+      toast(`AI 出场匹配完成 ✓ ${success}/${episodeIds.length} 集${failed > 0 ? `，${failed} 集失败` : ""}`, failed > 0 ? "error" : "success");
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "未知错误";
+      setAiEntityMatchStatus("");
+      toast(`AI 出场匹配失败: ${message}`, "error");
+    } finally {
+      setAiEntityMatchLoading(false);
+      removeTask(taskId);
+    }
+  }
+
+  async function handleClearAiEntityMatch(scope: "current" | "all") {
+    if (scope === "current") {
+      if (!episode) return;
+      await kvRemove(getEpisodeEntityMatchKey(episode));
+      setAiEntityMatchByEp((prev) => ({ ...prev, [episode]: null }));
+      await refreshAiEntityMatchSummary();
+      toast(`已清空 ${episode.toUpperCase()} 的 AI 出场匹配结果`, "success");
+      return;
+    }
+
+    await kvRemoveByPrefix("feicai-ai-entity-match-");
+    setAiEntityMatchByEp({});
+    setAiEntityMatchStatus("");
+    await refreshAiEntityMatchSummary();
+    toast("已清空全部 AI 出场匹配结果", "success");
+  }
+
   // ── Settings helper ──
 
   function getSettings(): Record<string, string> {
@@ -2513,8 +2737,10 @@ export default function StudioPage() {
     if (orderedItems.length === 0 && otherCount === 0) {
       const style = latestCst.style;
       const parts: string[] = [];
+      const styleDatabaseSummary = buildStyleDatabaseSummary(style);
       // ★ 不再单独输出 artStyle — stylePrompt JSON 中已包含完整风格信息，
       //   独立的 artStyle 行会与风格参考图识别出的提示词冲突/污染
+      if (styleDatabaseSummary) parts.push(`风格数据库: ${styleDatabaseSummary}`);
       if (style.stylePrompt) parts.push(`风格: ${style.stylePrompt}`);
       return parts.join("\n");
     }
@@ -2559,7 +2785,9 @@ export default function StudioPage() {
     parts.push(`[${refTotal} REFERENCE IMAGES ATTACHED: ${briefParts.join(" | ")}. Each image has a text label (参考图1, 参考图2...) interleaved before it — follow those labels strictly.]`);
     parts.push(`参考图序号对应关系：${indexLines.join("；")}`);
     const style = latestCst.style;
+    const styleDatabaseSummary = buildStyleDatabaseSummary(style);
     // ★ 不再单独输出 artStyle — stylePrompt JSON 中已包含完整风格信息
+    if (styleDatabaseSummary) parts.push(`风格数据库: ${styleDatabaseSummary}`);
     if (style.stylePrompt) parts.push(`风格: ${style.stylePrompt}`);
     return parts.join("\n");
   }
@@ -4980,11 +5208,20 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
     return items;
   }, [episode, gridImages, fourGroups.length]);
 
+  const currentEpisodeEntityMatch = aiEntityMatchByEp[episode] || null;
+
   /** Compute which characters/scenes/props appear in current episode's prompts */
   const episodeMentions = useMemo((): EpisodeMentions => {
+    if (currentEpisodeEntityMatch && getEpisodeEntityMatchTotal(currentEpisodeEntityMatch.result) > 0) {
+      return {
+        ...getEpisodeEntityMatchNames(currentEpisodeEntityMatch.result),
+        source: "ai",
+      };
+    }
+
     // ★ 包含智能分镜提示词，确保 RefBindPanel 在 smartNine 模式下也能正确匹配
     const allPromptText = [...ninePrompts, ...fourGroups.flat(), ...smartNinePrompts].join("\n");
-    if (!allPromptText.trim()) return { characters: [], scenes: [], props: [] };
+    if (!allPromptText.trim()) return { characters: [], scenes: [], props: [], source: "prompt" };
     const characters = consistency.characters
       .filter((c) => itemMatchesPrompt(c, allPromptText))
       .map((c) => c.name);
@@ -4997,8 +5234,13 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
     const props = consistency.props
       .filter((p) => itemMatchesPrompt(p, allPromptText))
       .map((p) => p.name);
-    return { characters, scenes, props };
-  }, [consistency, ninePrompts, fourGroups, smartNinePrompts]);
+    return { characters, scenes, props, source: "prompt" };
+  }, [currentEpisodeEntityMatch, consistency, ninePrompts, fourGroups, smartNinePrompts]);
+  const currentEpisodeEntityNames = useMemo(
+    () => currentEpisodeEntityMatch ? getEpisodeEntityMatchNames(currentEpisodeEntityMatch.result) : null,
+    [currentEpisodeEntityMatch],
+  );
+  const currentEpisodeEntityTotal = currentEpisodeEntityMatch ? getEpisodeEntityMatchTotal(currentEpisodeEntityMatch.result) : 0;
 
   // ── AI Extraction ──
 
@@ -6113,7 +6355,16 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
   // ── 智能体 → Studio 自定义宫格桥接 ──
   useEffect(() => {
     function handleCustomGridUpdate(e: Event) {
-      const detail = (e as CustomEvent).detail as { count?: number; prompts?: string[]; source?: string } | undefined;
+      const detail = (e as CustomEvent).detail as {
+        count?: number;
+        prompts?: string[];
+        source?: string;
+        entitySummary?: {
+          characters?: Array<{ id: string; name: string }>;
+          scenes?: Array<{ id: string; name: string }>;
+          props?: Array<{ id: string; name: string }>;
+        };
+      } | undefined;
       if (!detail) return;
       if (detail.count && detail.count >= 1 && detail.count <= 25) {
         applyCustomGridCount(detail.count);
@@ -6123,7 +6374,16 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
       }
       // 自动切换到自定义宫格模式
       setActiveMode("custom");
-      toast(`已接收 ${detail.prompts?.length || 0} 个分镜提示词`, "success");
+      const matchCount =
+        (detail.entitySummary?.characters?.length || 0) +
+        (detail.entitySummary?.scenes?.length || 0) +
+        (detail.entitySummary?.props?.length || 0);
+      toast(
+        matchCount > 0
+          ? `已接收 ${detail.prompts?.length || 0} 个分镜提示词，命中 ${matchCount} 项实体`
+          : `已接收 ${detail.prompts?.length || 0} 个分镜提示词`,
+        "success",
+      );
     }
     window.addEventListener("feicai-custom-grid-update", handleCustomGridUpdate);
     // 启动时检查是否有未消费的推送
@@ -6432,6 +6692,14 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
                   ))}
                 </div>
               </div>
+              <button
+                onClick={() => router.push("/grid-expand")}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium border border-[var(--border-default)] text-[var(--text-secondary)] hover:border-[var(--gold-primary)] hover:text-[var(--gold-primary)] transition cursor-pointer"
+                title="打开宫格扩展工作台，导入台词/剧本或拆分合成图"
+              >
+                <Maximize2 size={12} />
+                宫格扩展
+              </button>
               <span className="text-[10px] text-[var(--text-muted)]">
                 25宫格会按 5×5 布局生成，适合长节拍拆解或 Gemini 专用多镜头批量生图
               </span>
@@ -6441,6 +6709,128 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
 
         <div className="px-6 py-4 border-b border-[var(--border-default)] bg-[var(--bg-page)]">
           <WorkflowHandoffChecklist checklist={studioHandoffChecklist} />
+        </div>
+
+        <div className="px-6 py-4 border-b border-[var(--border-default)] bg-[var(--bg-page)]">
+          <div className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-4 shadow-sm">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center gap-2">
+                  <Bot size={16} className="text-[var(--gold-primary)]" />
+                  <span className="text-[14px] font-semibold text-[var(--text-primary)]">AI 出场匹配</span>
+                  <span className="rounded-full border border-[var(--border-default)] px-2 py-0.5 text-[10px] text-[var(--text-muted)]">
+                    已分析 {aiEntityMatchAnalyzedCount}/{episodes.length || 0} 集
+                  </span>
+                  {currentEpisodeEntityMatch && (
+                    <span className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-400">
+                      {episode.toUpperCase()} 已缓存
+                    </span>
+                  )}
+                </div>
+                <span className="text-[11px] leading-relaxed text-[var(--text-muted)]">
+                  用 LLM 按集判断实际出场的角色、场景和道具，结果会缓存到当前项目，并优先用于参考图绑定与素材推荐。
+                </span>
+                <div className="flex flex-wrap items-center gap-2 text-[11px] text-[var(--text-secondary)]">
+                  <span className="rounded-full border border-[var(--border-default)] px-2 py-0.5">角色 {episodeMentions.characters.length}</span>
+                  <span className="rounded-full border border-[var(--border-default)] px-2 py-0.5">场景 {episodeMentions.scenes.length}</span>
+                  <span className="rounded-full border border-[var(--border-default)] px-2 py-0.5">道具 {episodeMentions.props.length}</span>
+                  <span className="rounded-full border border-[var(--border-default)] px-2 py-0.5">
+                    来源 {episodeMentions.source === "ai" ? "AI缓存" : "提示词推断"}
+                  </span>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={handleAnalyzeCurrentEpisode}
+                  disabled={aiEntityMatchLoading || !episode}
+                  className="flex items-center gap-1.5 rounded-lg border border-[var(--border-default)] px-3 py-2 text-[12px] font-medium text-[var(--text-secondary)] transition hover:border-[var(--gold-primary)] hover:text-[var(--gold-primary)] disabled:opacity-40"
+                >
+                  {aiEntityMatchLoading ? <Loader size={13} className="animate-spin" /> : <Bot size={13} />}
+                  分析当前集
+                </button>
+                <button
+                  onClick={handleAnalyzeAllEpisodes}
+                  disabled={aiEntityMatchLoading}
+                  className="flex items-center gap-1.5 rounded-lg bg-[var(--gold-primary)] px-3 py-2 text-[12px] font-medium text-[#0A0A0A] transition hover:brightness-110 disabled:opacity-40"
+                >
+                  {aiEntityMatchLoading ? <Loader size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+                  分析所有集
+                </button>
+                <button
+                  onClick={() => handleClearAiEntityMatch("current")}
+                  disabled={aiEntityMatchLoading || !currentEpisodeEntityMatch}
+                  className="flex items-center gap-1.5 rounded-lg border border-[var(--border-default)] px-3 py-2 text-[12px] font-medium text-[var(--text-secondary)] transition hover:border-red-400 hover:text-red-400 disabled:opacity-40"
+                >
+                  <Trash2 size={13} />
+                  清空当前集
+                </button>
+                <button
+                  onClick={() => handleClearAiEntityMatch("all")}
+                  disabled={aiEntityMatchLoading || aiEntityMatchAnalyzedCount === 0}
+                  className="flex items-center gap-1.5 rounded-lg border border-[var(--border-default)] px-3 py-2 text-[12px] font-medium text-[var(--text-secondary)] transition hover:border-red-400 hover:text-red-400 disabled:opacity-40"
+                >
+                  <Trash2 size={13} />
+                  清空全部
+                </button>
+              </div>
+            </div>
+
+            {aiEntityMatchStatus && (
+              <div className="mt-3 rounded-lg border border-[var(--border-default)] bg-[var(--bg-base)] px-3 py-2 text-[11px] text-[var(--text-secondary)]">
+                {aiEntityMatchStatus}
+              </div>
+            )}
+
+            {currentEpisodeEntityMatch && currentEpisodeEntityNames && (
+              <div className="mt-3 grid gap-3 md:grid-cols-3">
+                <div className="rounded-lg border border-[var(--border-default)] bg-[var(--bg-base)] p-3">
+                  <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-[var(--text-primary)]">
+                    <User size={12} className="text-[var(--gold-primary)]" />
+                    角色
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {currentEpisodeEntityNames.characters.length > 0 ? currentEpisodeEntityNames.characters.map((name) => (
+                      <span key={name} className="rounded-full border border-[var(--border-default)] px-2 py-0.5 text-[10px] text-[var(--text-secondary)]">
+                        {name}
+                      </span>
+                    )) : <span className="text-[10px] text-[var(--text-muted)]">未命中</span>}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-[var(--border-default)] bg-[var(--bg-base)] p-3">
+                  <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-[var(--text-primary)]">
+                    <Mountain size={12} className="text-[var(--gold-primary)]" />
+                    场景
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {currentEpisodeEntityNames.scenes.length > 0 ? currentEpisodeEntityNames.scenes.map((name) => (
+                      <span key={name} className="rounded-full border border-[var(--border-default)] px-2 py-0.5 text-[10px] text-[var(--text-secondary)]">
+                        {name}
+                      </span>
+                    )) : <span className="text-[10px] text-[var(--text-muted)]">未命中</span>}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-[var(--border-default)] bg-[var(--bg-base)] p-3">
+                  <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-[var(--text-primary)]">
+                    <Sword size={12} className="text-[var(--gold-primary)]" />
+                    道具
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {currentEpisodeEntityNames.props.length > 0 ? currentEpisodeEntityNames.props.map((name) => (
+                      <span key={name} className="rounded-full border border-[var(--border-default)] px-2 py-0.5 text-[10px] text-[var(--text-secondary)]">
+                        {name}
+                      </span>
+                    )) : <span className="text-[10px] text-[var(--text-muted)]">未命中</span>}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {currentEpisodeEntityMatch && (
+              <div className="mt-2 text-[10px] text-[var(--text-muted)]">
+                最近分析时间：{new Date(currentEpisodeEntityMatch.matchedAt).toLocaleString()} · 共命中 {currentEpisodeEntityTotal} 项
+              </div>
+            )}
+          </div>
         </div>
 
         {studioRecoveryPanelItems.length > 0 && (
@@ -6985,6 +7375,9 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
         onClose={closeRefBind}
         episodeMentions={episodeMentions}
         episodeLabel={episode}
+        onEntityMatch={handleAnalyzeAllEpisodes}
+        entityMatching={aiEntityMatchLoading}
+        entityMatchProgress={aiEntityMatchStatus}
       />
 
       {/* ── 参考图角色库弹窗 ── */}
@@ -7342,7 +7735,8 @@ function MotionPromptModal({ mode, episode, fourBeat, gridImages, ninePrompts, s
     }
     if (consistency.style) {
       const st = consistency.style;
-      parts.push(`【视觉风格】画风：${st.artStyle || "未设定"}，色调：${st.colorPalette || "未设定"}${st.stylePrompt ? `，风格提示：${st.stylePrompt}` : ""}`);
+      const styleDatabaseSummary = buildStyleDatabaseSummary(st);
+      parts.push(`【视觉风格】画风：${st.artStyle || "未设定"}，色调：${st.colorPalette || "未设定"}${styleDatabaseSummary ? `，风格数据库：${styleDatabaseSummary}` : ""}${st.stylePrompt ? `，风格提示：${st.stylePrompt}` : ""}`);
     }
     return parts;
   }

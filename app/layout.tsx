@@ -56,6 +56,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN" suppressHydrationWarning className={`h-full ${cormorantGaramond.variable} ${inter.variable} ${jetbrainsMono.variable}`}>
+      <head>
+        <link rel="stylesheet" href="/fix.css" />
+      </head>
       <body className="h-full overflow-hidden bg-[var(--bg-page)] text-[var(--text-primary)] font-ui antialiased">
         <script dangerouslySetInnerHTML={{ __html: themeBootScript }} />
         <TaskQueueProvider>

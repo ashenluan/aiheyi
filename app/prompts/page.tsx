@@ -22,7 +22,7 @@ interface PromptItem {
   label: string;
   description: string;
   category: string;
-  readonly?: boolean; // 仅供参考，不可编辑（编辑不会影响任何 AI 调用）
+  readonly?: boolean;
 }
 
 // 分类显示顺序
@@ -39,13 +39,19 @@ const PROMPT_ITEMS: PromptItem[] = [
   { key: "nineGridGem", label: "★ 九宫格分镜 (Gem.txt)", description: "流水线核心 · 9宫格分镜Gem.txt · 作为系统提示词发送给LLM生成九宫格分镜JSON", category: "pipeline" },
   { key: "fourGridGem", label: "★ 四宫格分镜 (Gem.txt)", description: "流水线核心 · 4宫格分镜Gem.txt · 作为系统提示词发送给LLM生成四宫格分镜JSON", category: "pipeline" },
   { key: "extract", label: "提取系统提示词", description: "从剧本/文本中提取角色、场景、道具的AI系统提示词", category: "pipeline" },
-  { key: "analyzeScript", label: "剧本智能分集", description: "分析剧本章节内容，判断应拆分为多少集（每集=1张九宫格）", category: "pipeline" },
+  { key: "analyzeScript", label: "📖 智能分镜模式指南（只读）", description: "智能分镜模式工作指南与分集分析参考文档", category: "pipeline", readonly: true },
   // ── 生图工作台 ──
   { key: "styleAnalyze", label: "风格识别提示词", description: "分析上传图片的视觉风格，输出风格描述和关键词", category: "studio" },
   { key: "upscale", label: "超分系统提示词", description: "图片超分放大提示词（发送给图像API，保持原图不变仅提升分辨率）", category: "studio" },
+  { key: "restoreStoryboard", label: "分镜还原智能体", description: "根据上传分镜或镜头描述还原关键帧信息，并补充专业镜头语言", category: "studio" },
   { key: "translatePrompt", label: "AI参考图翻译提示词", description: "将角色/场景/道具中文描述扩展翻译为英文 Design Reference Sheet 提示词（一致性面板「AI翻译」按钮调用）", category: "studio" },
+  { key: "translateSceneViewPrompt", label: "AI场景多角度翻译提示词", description: "场景参考图专用 · 将中文场景描述扩展为多角度实景参考图英文提示词", category: "studio" },
   { key: "translateGridPrompt", label: "AI分镜翻译提示词", description: "将九宫格/四宫格分镜格内的中文描述翻译为英文生图提示词（分镜面板「AI翻译」按钮调用）", category: "studio" },
   { key: "continuousAction", label: "连续动作叙事智能体", description: "四宫格「一键生成连续动提示词」按钮调用 · 分析九宫格单格画面+描述，生成4个连续动作帧的中英文提示词", category: "studio" },
+  { key: "customScriptImport", label: "台词/剧本导入智能体", description: "自定义宫格与宫格扩展页调用 · 保留原文不做修改，自动分析时代背景并分配到宫格（1-25格）", category: "studio" },
+  { key: "gridExpandAgent", label: "⊞ 单格变九宫格智能体", description: "九宫格拆展提示词模板 · 支持 {{STYLE}} 和 {{ACTION}} 占位符 · 将单格分镜自动拓展为3×3多机位分镜", category: "studio" },
+  { key: "entityMatch", label: "🤖 出场匹配智能体", description: "全局参考图绑定页「AI一键匹配出场」按钮调用 · 根据分镜内容精准匹配每集出场的角色、场景、道具", category: "studio" },
+  { key: "costumeDesignAgent", label: "👗 服装设计智能体", description: "角色库服装设计功能调用 · 根据角色设定、风格上下文与世界观生成多套高定服装方案", category: "studio" },
   // ── 视频生成 ──
   { key: "motionPrompt", label: "动态提示词模板", description: "图生视频动态提示词系统提示词（单图/首尾帧/多参考模式）", category: "video" },
   { key: "seedanceOmni", label: "Seedance 全能参考", description: "Seedance 2.0 全能参考模式 AI 提示词生成（分析参考图→视频提示词）", category: "video" },
@@ -126,14 +132,15 @@ export default function PromptsPage() {
     toast("所有提示词已恢复为默认值", "success");
   }
 
-  function toggleExpand(key: string) {
+  function handleSelectItem(item: PromptItem) {
+    setActiveKey(item.key);
+    if (item.readonly) return;
     setExpanded((prev) => {
       const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
+      if (next.has(item.key)) next.delete(item.key);
+      else next.add(item.key);
       return next;
     });
-    setActiveKey(key);
   }
 
   const currentItem = PROMPT_ITEMS.find((p) => p.key === activeKey);
@@ -200,15 +207,12 @@ export default function PromptsPage() {
                   {items.map((item) => (
               <button
                 key={item.key}
-                onClick={() => { if (!item.readonly) toggleExpand(item.key); }}
-                className={`flex items-center gap-2 w-full px-4 py-3 text-left border-b border-[var(--border-default)] transition ${
-                  item.readonly
-                    ? "opacity-40 cursor-not-allowed"
-                    : activeKey === item.key
-                      ? "bg-[var(--gold-transparent)] border-l-2 border-l-[var(--gold-primary)]"
-                      : "hover:bg-[var(--bg-surface)] cursor-pointer"
+                onClick={() => handleSelectItem(item)}
+                className={`flex items-center gap-2 w-full px-4 py-3 text-left border-b border-[var(--border-default)] transition cursor-pointer ${
+                  activeKey === item.key
+                    ? "bg-[var(--gold-transparent)] border-l-2 border-l-[var(--gold-primary)]"
+                    : "hover:bg-[var(--bg-surface)]"
                 }`}
-                disabled={item.readonly}
               >
                 {item.readonly ? (
                   <span className="text-[10px] text-[var(--text-muted)] shrink-0">—</span>
@@ -220,13 +224,13 @@ export default function PromptsPage() {
                 <div className="flex flex-col gap-0.5 flex-1 min-w-0">
                   <div className="flex items-center gap-1.5">
                     <span className={`text-[12px] font-medium truncate ${
-                      item.readonly ? "text-[var(--text-muted)]" : activeKey === item.key ? "text-[var(--gold-primary)]" : "text-[var(--text-primary)]"
+                      item.readonly ? (activeKey === item.key ? "text-[var(--gold-primary)]" : "text-[var(--text-secondary)]") : activeKey === item.key ? "text-[var(--gold-primary)]" : "text-[var(--text-primary)]"
                     }`}>
                       {item.label}
                     </span>
                     {item.readonly ? (
                       <span className="text-[9px] px-1 py-0.5 border border-[var(--border-default)] text-[var(--text-muted)] rounded shrink-0">
-                        不可编辑
+                        只读
                       </span>
                     ) : isModified(item.key) ? (
                       <span className="text-[9px] px-1 py-0.5 bg-[var(--gold-primary)] text-[#0A0A0A] font-bold rounded shrink-0">
@@ -254,7 +258,7 @@ export default function PromptsPage() {
                   </span>
                   {isCurrentReadonly && (
                     <span className="text-[10px] px-1.5 py-0.5 border border-[var(--border-default)] text-[var(--text-muted)] rounded">
-                      仅供参考 · 不可编辑
+                      只读文档
                     </span>
                   )}
                 </div>
@@ -281,10 +285,15 @@ export default function PromptsPage() {
             {/* Textarea */}
             <div className="flex-1 p-4 overflow-hidden">
               {isCurrentReadonly ? (
-                <div className="w-full h-full flex flex-col items-center justify-center gap-3 text-[var(--text-muted)]">
-                  <span className="text-[40px] opacity-20">🔒</span>
-                  <span className="text-[13px]">此项为参考文档，不支持在线编辑</span>
-                  <span className="text-[11px] opacity-60">如需修改，请直接编辑对应的 .md 源文件</span>
+                <div className="w-full h-full flex flex-col gap-3">
+                  <div className="rounded border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2 text-[11px] text-[var(--text-muted)]">
+                    当前条目为只读参考文档，用于对照官方工作流说明，不参与在线编辑保存。
+                  </div>
+                  <div className="flex-1 overflow-auto rounded border border-[var(--border-default)] bg-[var(--bg-surface)] p-4">
+                    <pre className="whitespace-pre-wrap text-[12px] leading-relaxed text-[var(--text-primary)] font-mono">
+                      {prompts[activeKey] || defaults[activeKey] || "暂无内容"}
+                    </pre>
+                  </div>
                 </div>
               ) : (
               <textarea

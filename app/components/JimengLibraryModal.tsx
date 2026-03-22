@@ -18,6 +18,14 @@ interface JimengLibraryItem {
   filename: string;
   size?: number;
   createdAt: number;
+  label?: string;
+  model?: string;
+  resolution?: string;
+  ratio?: string;
+  prompt?: string;
+  promptPreview?: string;
+  sourceType?: "history" | "page";
+  searchText?: string;
 }
 
 interface JimengLibraryModalProps {
@@ -140,9 +148,11 @@ export default function JimengLibraryModal({
   const filtered = images.filter(
     (img) =>
       !search ||
+      img.searchText?.includes(search.toLowerCase()) ||
       img.filename.toLowerCase().includes(search.toLowerCase()) ||
       img.key.toLowerCase().includes(search.toLowerCase())
   );
+  const selectedItem = filtered.find((img) => selectedKeys.has(img.key)) || null;
   const groupMap = new Map<string, JimengLibraryItem[]>();
   for (const img of filtered) {
     const m = img.key.match(/^jimeng-(\d+)-/);
@@ -182,7 +192,7 @@ export default function JimengLibraryModal({
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="搜索图片..."
+              placeholder="搜索图片 / 模型 / 提示词..."
               className="flex-1 bg-transparent text-[12px] text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)]"
             />
           </div>
@@ -199,6 +209,55 @@ export default function JimengLibraryModal({
 
         {/* 图片列表 */}
         <div className="flex-1 overflow-y-auto p-5">
+          {selectedItem && (
+            <div className="mb-4 rounded-xl border border-[var(--gold-transparent)] bg-[var(--surface-accent-soft)] p-3 shadow-[var(--theme-shadow-soft)]">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[10px] uppercase tracking-[0.22em] text-[var(--text-muted)]">
+                    图片元数据
+                  </div>
+                  <div className="mt-1 text-[13px] font-medium text-[var(--text-primary)] truncate">
+                    {selectedItem.label || selectedItem.filename}
+                  </div>
+                </div>
+                <div className="text-[10px] text-[var(--text-muted)] shrink-0">
+                  {new Date(selectedItem.createdAt).toLocaleString("zh-CN", {
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </div>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2 text-[10px]">
+                {selectedItem.model && (
+                  <span className="rounded-full border border-[var(--border-default)] px-2 py-0.5 text-[var(--text-secondary)]">
+                    {selectedItem.model}
+                  </span>
+                )}
+                {selectedItem.resolution && (
+                  <span className="rounded-full border border-[var(--border-default)] px-2 py-0.5 text-[var(--text-secondary)]">
+                    {selectedItem.resolution}
+                  </span>
+                )}
+                {selectedItem.ratio && (
+                  <span className="rounded-full border border-[var(--border-default)] px-2 py-0.5 text-[var(--text-secondary)]">
+                    {selectedItem.ratio}
+                  </span>
+                )}
+                {selectedItem.sourceType && (
+                  <span className="rounded-full border border-[var(--border-default)] px-2 py-0.5 text-[var(--text-secondary)]">
+                    {selectedItem.sourceType === "page" ? "即梦页记录" : "历史任务"}
+                  </span>
+                )}
+              </div>
+              {selectedItem.promptPreview && (
+                <p className="mt-2 text-[11px] leading-relaxed text-[var(--text-muted)] line-clamp-2">
+                  {selectedItem.promptPreview}
+                </p>
+              )}
+            </div>
+          )}
           {loading ? (
             <div className="flex items-center justify-center h-40">
               <Loader size={24} className="text-[var(--gold-primary)] animate-spin" />
@@ -254,6 +313,17 @@ export default function JimengLibraryModal({
                               className="max-w-full max-h-full object-contain"
                               loading="lazy"
                             />
+                          </div>
+                          <div className="border-t border-[var(--border-default)] bg-[var(--bg-surface)] px-2 py-1.5">
+                            <div className="truncate text-[10px] font-medium text-[var(--text-primary)]">
+                              {img.label || img.filename}
+                            </div>
+                            <div className="mt-0.5 flex items-center justify-between gap-2 text-[9px] text-[var(--text-muted)]">
+                              <span className="truncate">
+                                {[img.model, img.resolution].filter(Boolean).join(" · ") || "即梦图库"}
+                              </span>
+                              {img.ratio && <span className="shrink-0">{img.ratio}</span>}
+                            </div>
                           </div>
                           {isSelected && (
                             <div className="absolute top-1.5 right-1.5 w-5 h-5 bg-[var(--gold-primary)] flex items-center justify-center">

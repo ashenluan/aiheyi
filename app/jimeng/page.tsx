@@ -28,6 +28,8 @@ import {
   Download,
 } from "lucide-react";
 import Sidebar from "../components/Sidebar";
+import { loadConsistencyAsync, isValidImageRef } from "../lib/consistency";
+import { buildStyleDatabasePromptParts, buildStyleDatabaseSummary } from "../lib/stylePresets";
 import {
   JIMENG_IMAGE_MODEL_OPTIONS,
   JIMENG_IMAGE_RATIO_OPTIONS,
@@ -54,11 +56,19 @@ interface GenerationBatch {
   model: JimengImageModelId;
   ratio: JimengImageRatio;
   resolution: JimengImageResolution;
+  styleSummary?: string;
+  stylePromptSummary?: string;
   status: "generating" | "done" | "error";
   results: JimengImageResult[];
   error?: string;
   failCode?: number;
   startTime: number;
+}
+
+interface JimengStyleContext {
+  styleSummary: string;
+  stylePromptSummary: string;
+  styleReferenceImage?: string;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -87,7 +97,21 @@ export default function JimengPage() {
   const [stateLoaded, setStateLoaded] = useState(false); // 磁盘状态是否已加载
 
   // ── 图片库 ──
-  const [libraryImages, setLibraryImages] = useState<Array<{ key: string; filename: string; createdAt: number }>>([]);
+  const [libraryImages, setLibraryImages] = useState<Array<{
+    key: string;
+    filename: string;
+    createdAt: number;
+    label?: string;
+    model?: string;
+    resolution?: string;
+    ratio?: string;
+    prompt?: string;
+    promptPreview?: string;
+    styleSummary?: string;
+    stylePromptSummary?: string;
+    sourceType?: "history" | "page";
+    searchText?: string;
+  }>>([]);
   const [librarySearch, setLibrarySearch] = useState("");
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [librarySelected, setLibrarySelected] = useState<Set<string>>(new Set());
@@ -96,6 +120,7 @@ export default function JimengPage() {
 
   // ── 放大查看 ──
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [styleContext, setStyleContext] = useState<JimengStyleContext>({ styleSummary: "", stylePromptSummary: "" });
 
   // ── 凭证 ──
   const [credentials, setCredentials] = useState({ sessionId: "", webId: "", userId: "" });
@@ -173,6 +198,41 @@ export default function JimengPage() {
     } catch { /* ignore */ }
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const profile = await loadConsistencyAsync();
+        if (cancelled) return;
+        const style = profile.style;
+        const styleDatabaseSummary = buildStyleDatabaseSummary(style);
+        const stylePromptSummary = [
+          style.artStyle ? `整体画风：${style.artStyle}` : "",
+          style.colorPalette ? `色彩基调：${style.colorPalette}` : "",
+          styleDatabaseSummary ? `风格数据库：${styleDatabaseSummary}` : "",
+          ...buildStyleDatabasePromptParts(style),
+          style.stylePresetLabel ? `风格预设：${style.stylePresetEmoji || "✨"}${style.stylePresetLabel}` : "",
+          style.timeSetting ? `时代/世界观：${style.timeSetting}` : "",
+          style.stylePrompt ? `风格提示：${style.stylePrompt}` : "",
+          style.additionalNotes ? `补充要求：${style.additionalNotes}` : "",
+        ].filter(Boolean).join("；");
+        setStyleContext({
+          styleSummary: [
+            style.artStyle,
+            style.colorPalette,
+            styleDatabaseSummary,
+            style.stylePresetLabel ? `${style.stylePresetEmoji || "✨"}${style.stylePresetLabel}` : "",
+          ].filter(Boolean).join(" · "),
+          stylePromptSummary,
+          styleReferenceImage: isValidImageRef(style.styleImage) ? style.styleImage : undefined,
+        });
+      } catch {
+        if (!cancelled) setStyleContext({ styleSummary: "", stylePromptSummary: "" });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   // 保存凭证
   const saveCredentials = useCallback((creds: typeof credentials) => {
     // 读取已有设置，合并写入（保留 Seedance 可能存的其他字段）
@@ -242,6 +302,14 @@ export default function JimengPage() {
 
     setIsGenerating(true);
     const batchId = `batch-${Date.now()}`;
+    const effectivePrompt = [
+      prompt.trim(),
+      styleContext.stylePromptSummary ? `【自动注入的前置风格】${styleContext.stylePromptSummary}` : "",
+    ].filter(Boolean).join("\n\n");
+    const mergedReferenceImages = Array.from(new Set([
+      ...(styleContext.styleReferenceImage ? [styleContext.styleReferenceImage] : []),
+      ...referenceImages,
+    ])).slice(0, MAX_REFERENCE_IMAGES);
 
     try {
       const res = await fetch("/api/jimeng-image", {
@@ -249,7 +317,7 @@ export default function JimengPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "generate",
-          prompt: prompt.slice(0, MAX_PROMPT_LENGTH),
+          prompt: effectivePrompt.slice(0, MAX_PROMPT_LENGTH),
           negativePrompt,
           model,
           ratio,
@@ -258,7 +326,7 @@ export default function JimengPage() {
           sessionId: credentials.sessionId,
           webId: credentials.webId,
           userId: credentials.userId,
-          referenceImages: referenceImages.length > 0 ? referenceImages : undefined,
+          referenceImages: mergedReferenceImages.length > 0 ? mergedReferenceImages : undefined,
         }),
       });
 
@@ -276,6 +344,8 @@ export default function JimengPage() {
         model,
         ratio,
         resolution,
+        styleSummary: styleContext.styleSummary,
+        stylePromptSummary: styleContext.stylePromptSummary,
         status: "generating",
         results: [],
         startTime: Date.now(),
@@ -290,7 +360,7 @@ export default function JimengPage() {
       alert("生成请求发送失败，请检查网络连接");
       setIsGenerating(false);
     }
-  }, [prompt, negativePrompt, model, ratio, resolution, groups, referenceImages, credentials, isGenerating, batches.length]);
+  }, [prompt, negativePrompt, model, ratio, resolution, groups, referenceImages, credentials, isGenerating, styleContext]);
 
   // ── 轮询任务状态 ──
   const startPolling = useCallback((taskId: string, batchId: string) => {
@@ -506,6 +576,17 @@ export default function JimengPage() {
                     placeholder="描述你想要生成的图片内容..."
                     className="w-full h-[120px] px-3 py-2.5 text-[13px] bg-[var(--bg-surface)] border border-[var(--border-default)] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none focus:border-[var(--gold-primary)] transition resize-none"
                   />
+                  {styleContext.styleSummary && (
+                    <div className="flex flex-col gap-1.5 px-3 py-2 border border-[var(--border-default)] bg-[var(--surface-contrast)]">
+                      <span className="text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">自动注入的前置风格</span>
+                      <span className="text-[11px] text-[var(--gold-primary)]">{styleContext.styleSummary}</span>
+                      {styleContext.stylePromptSummary && (
+                        <span className="text-[10px] leading-relaxed text-[var(--text-muted)] line-clamp-3">
+                          {styleContext.stylePromptSummary}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* 反向提示词 */}
@@ -708,6 +789,11 @@ export default function JimengPage() {
                           <span className="text-[10px] text-[var(--text-muted)]">
                             {batch.model} · {batch.ratio}
                           </span>
+                          {batch.styleSummary && (
+                            <span className="text-[10px] text-[var(--gold-primary)] truncate max-w-[320px]">
+                              {batch.styleSummary}
+                            </span>
+                          )}
                           {batch.status === "done" && (
                             <span className="text-[10px] text-green-400">✓ {batch.results.length}张</span>
                           )}
@@ -890,7 +976,15 @@ export default function JimengPage() {
                 </div>
               ) : (() => {
                 // 按时间戳前缀分组（同一批生成的图片 key 格式为 jimeng-{timestamp}-{index}）
-                const filtered = libraryImages.filter(img => !librarySearch || img.filename.toLowerCase().includes(librarySearch.toLowerCase()));
+                const filtered = libraryImages.filter((img) => {
+                  if (!librarySearch) return true;
+                  const needle = librarySearch.toLowerCase();
+                  return (
+                    img.searchText?.includes(needle) ||
+                    img.filename.toLowerCase().includes(needle) ||
+                    img.key.toLowerCase().includes(needle)
+                  );
+                });
                 const groupMap = new Map<string, typeof filtered>();
                 for (const img of filtered) {
                   // 提取时间戳前缀（jimeng-1741234567890 → “1741234567890”）
@@ -940,6 +1034,27 @@ export default function JimengPage() {
                                     className="max-w-full max-h-full object-contain"
                                     loading="lazy"
                                   />
+                                </div>
+                                <div className="border-t border-[var(--border-default)] bg-[var(--bg-surface)] px-2 py-1.5">
+                                  <div className="truncate text-[10px] font-medium text-[var(--text-primary)]">
+                                    {img.label || img.filename}
+                                  </div>
+                                  <div className="mt-0.5 flex items-center justify-between gap-2 text-[9px] text-[var(--text-muted)]">
+                                    <span className="truncate">
+                                      {[img.model, img.resolution].filter(Boolean).join(" · ") || "即梦图库"}
+                                    </span>
+                                    {img.ratio && <span className="shrink-0">{img.ratio}</span>}
+                                  </div>
+                                  {img.styleSummary && (
+                                    <div className="mt-1 truncate text-[9px] text-[var(--gold-primary)]">
+                                      {img.styleSummary}
+                                    </div>
+                                  )}
+                                  {img.promptPreview && (
+                                    <p className="mt-1 line-clamp-2 text-[9px] leading-relaxed text-[var(--text-muted)]">
+                                      {img.promptPreview}
+                                    </p>
+                                  )}
                                 </div>
                                 {/* hover 操作按钮 — 居中显示 */}
                                 {!multiSelectMode && (

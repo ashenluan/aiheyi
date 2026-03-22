@@ -329,6 +329,7 @@ async function takeWorkspaceSnapshot(projectId: string): Promise<WorkspaceSnapsh
   const dynamicKV: { key: string; value: string }[] = [];
   const dynamicPrefixes = [
     "feicai-smart-nine-prompts-",
+    "feicai-ai-entity-match-",
     "feicai-beat-prompts-",
     "feicai-motion-prompts-",
     "feicai-custom-grid-prompts-",
@@ -672,6 +673,7 @@ export async function clearCurrentWorkspace(): Promise<void> {
     // ★ 清理智能分镜分析结果 + 各集九宫格提示词
     kvRemove("feicai-smart-analysis-result"),
     kvRemoveByPrefix("feicai-smart-nine-prompts-"),
+    kvRemoveByPrefix("feicai-ai-entity-match-"),
     // ★ 清理节拍拆解 EP 标记（第八十七次修复配套）
     kvRemoveByPrefix("feicai-beat-prompts-"),
     // ★ 清理自定义宫格提示词

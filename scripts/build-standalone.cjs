@@ -7,6 +7,7 @@ const distDir = process.env.FEICAI_DIST_DIR || '.next-standalone';
 const tsconfigPath = path.join(root, 'tsconfig.json');
 const nextBin = path.join(root, 'node_modules', 'next', 'dist', 'bin', 'next');
 const syncScript = path.join(root, 'scripts', 'sync-standalone-static.cjs');
+const standaloneOutputPath = path.join(root, distDir, 'standalone');
 
 const originalTsconfig = fs.readFileSync(tsconfigPath, 'utf8');
 const env = {
@@ -18,6 +19,11 @@ const env = {
 let exitCode = 0;
 
 try {
+  if (fs.existsSync(standaloneOutputPath)) {
+    fs.rmSync(standaloneOutputPath, { recursive: true, force: true });
+    console.log(`[build:standalone] cleared previous standalone output: ${standaloneOutputPath}`);
+  }
+
   const buildResult = spawnSync(process.execPath, [nextBin, 'build', '--webpack'], {
     cwd: root,
     env,

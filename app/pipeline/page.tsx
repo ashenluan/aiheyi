@@ -47,10 +47,15 @@ import { parseChapters } from "../lib/chapterParser";
 import { archiveCurrentWorkspace, overwriteProject, getActiveProjectId, hasWorkspaceData } from "../lib/projects";
 import {
   BUILTIN_STYLE_PRESETS,
+  buildStyleDatabaseSummary,
   createCustomStylePresetId,
+  LENS_EFFECT_OPTIONS,
   loadCustomStylePresetsAsync,
+  LIGHTING_MOOD_OPTIONS,
+  QUALITY_PRESET_OPTIONS,
   saveCustomStylePresets,
   type StylePreset,
+  VISUAL_STYLE_OPTIONS,
 } from "../lib/stylePresets";
 import AgentStoryboardPanel from "../components/AgentStoryboardPanel";
 import WorkflowReadinessPanel from "../components/WorkflowReadinessPanel";
@@ -446,6 +451,10 @@ export default function PipelinePage() {
       sid: consistency.style.stylePresetId || "",
       sl: consistency.style.stylePresetLabel || "",
       ss: consistency.style.stylePresetSource || "",
+      vs: consistency.style.visualStyle || "",
+      qp: consistency.style.qualityPreset || "",
+      le: consistency.style.lensEffects || [],
+      lm: consistency.style.lightingMood || "",
       r: consistency.style.resolution,
       a: consistency.style.aspectRatio,
       chars: consistency.characters.length,
@@ -661,6 +670,10 @@ export default function PipelinePage() {
     [customStylePresets],
   );
   const selectedStylePresetId = consistency.style.stylePresetId || "";
+  const styleDatabaseSummary = useMemo(
+    () => buildStyleDatabaseSummary(consistency.style),
+    [consistency.style],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -753,6 +766,20 @@ export default function PipelinePage() {
     }
     toast("已删除自定义风格预设", "success");
   }, [customStylePresets, selectedStylePresetId, toast, updateConsistency]);
+
+  const toggleLensEffect = useCallback((lensId: string) => {
+    updateConsistency((prev) => {
+      const current = Array.isArray(prev.style.lensEffects) ? prev.style.lensEffects : [];
+      const exists = current.includes(lensId);
+      return {
+        ...prev,
+        style: {
+          ...prev.style,
+          lensEffects: exists ? current.filter((id) => id !== lensId) : [...current, lensId],
+        },
+      };
+    });
+  }, [updateConsistency]);
 
   // Sync from consistency → local (on mount or external changes)
   useEffect(() => {
@@ -1722,7 +1749,7 @@ export default function PipelinePage() {
           <div className="flex items-center gap-2 mb-1">
             <Palette size={16} className="text-[var(--gold-primary)]" />
             <span className="font-serif text-[18px] font-medium text-[var(--text-primary)]">前置设定</span>
-            <span className="text-[12px] text-[var(--text-muted)] ml-2">执行前请确认风格 / 画幅 / 分辨率</span>
+            <span className="text-[12px] text-[var(--text-muted)] ml-2">执行前请确认风格 / 画质 / 镜头 / 光影 / 画幅 / 分辨率</span>
             <div className="flex-1" />
             <button
               onClick={handleSyncToStudio}
@@ -1948,6 +1975,153 @@ export default function PipelinePage() {
                     </div>
                   </div>
                 )}
+              </div>
+
+              <div className="flex flex-col gap-3 p-3 border border-[var(--border-default)] bg-[var(--surface-contrast)]">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[11px] font-medium text-[var(--text-muted)] uppercase tracking-wider">风格数据库 v2</span>
+                  <span className="text-[10px] text-[var(--text-muted)]">8种整体风格 / 3种画质 / 8种镜头 / 8种光影</span>
+                  {styleDatabaseSummary && (
+                    <span className="inline-flex items-center gap-1 px-2 py-1 text-[11px] border border-[var(--gold-primary)]/30 bg-[var(--gold-transparent)] text-[var(--gold-primary)]">
+                      <span>✨</span>
+                      <span>{styleDatabaseSummary}</span>
+                    </span>
+                  )}
+                  <div className="flex-1" />
+                  <button
+                    onClick={() => updateConsistency((prev) => ({
+                      ...prev,
+                      style: {
+                        ...prev.style,
+                        visualStyle: "",
+                        qualityPreset: "",
+                        lensEffects: [],
+                        lightingMood: "",
+                      },
+                    }))}
+                    className="px-3 py-1.5 text-[11px] border border-[var(--border-default)] text-[var(--text-secondary)] hover:border-[var(--gold-primary)] hover:text-[var(--gold-primary)] transition cursor-pointer"
+                  >
+                    清空组合
+                  </button>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <span className="text-[11px] font-medium text-[var(--text-muted)] uppercase tracking-wider">整体风格</span>
+                  <div className="grid grid-cols-2 xl:grid-cols-4 gap-2">
+                    {VISUAL_STYLE_OPTIONS.map((option) => {
+                      const active = consistency.style.visualStyle === option.id;
+                      return (
+                        <button
+                          key={option.id}
+                          onClick={() => updateConsistency((prev) => ({
+                            ...prev,
+                            style: {
+                              ...prev.style,
+                              visualStyle: prev.style.visualStyle === option.id ? "" : option.id,
+                            },
+                          }))}
+                          className={`flex flex-col items-start gap-1.5 p-3 border text-left transition cursor-pointer ${
+                            active
+                              ? "border-[var(--gold-primary)] bg-[var(--gold-transparent)] shadow-[var(--theme-shadow-soft)]"
+                              : "border-[var(--border-default)] bg-[var(--bg-card)] hover:border-[var(--gold-primary)]/60"
+                          }`}
+                          title={option.prompt}
+                        >
+                          <span className="text-[13px] font-medium text-[var(--text-primary)]">{option.emoji} {option.label}</span>
+                          <span className="text-[10px] text-[var(--text-muted)] leading-relaxed">{option.description}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="grid xl:grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-2">
+                    <span className="text-[11px] font-medium text-[var(--text-muted)] uppercase tracking-wider">画质档位</span>
+                    <div className="flex flex-wrap gap-2">
+                      {QUALITY_PRESET_OPTIONS.map((option) => {
+                        const active = consistency.style.qualityPreset === option.id;
+                        return (
+                          <button
+                            key={option.id}
+                            onClick={() => updateConsistency((prev) => ({
+                              ...prev,
+                              style: {
+                                ...prev.style,
+                                qualityPreset: prev.style.qualityPreset === option.id ? "" : option.id,
+                              },
+                            }))}
+                            className={`px-3 py-2 text-[12px] border transition cursor-pointer ${
+                              active
+                                ? "border-[var(--gold-primary)] bg-[var(--gold-transparent)] text-[var(--gold-primary)]"
+                                : "border-[var(--border-default)] text-[var(--text-secondary)] hover:border-[var(--gold-primary)]/60"
+                            }`}
+                            title={option.description}
+                          >
+                            {option.emoji} {option.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <span className="text-[11px] font-medium text-[var(--text-muted)] uppercase tracking-wider">光影预设</span>
+                    <div className="flex flex-wrap gap-2">
+                      {LIGHTING_MOOD_OPTIONS.map((option) => {
+                        const active = consistency.style.lightingMood === option.id;
+                        return (
+                          <button
+                            key={option.id}
+                            onClick={() => updateConsistency((prev) => ({
+                              ...prev,
+                              style: {
+                                ...prev.style,
+                                lightingMood: prev.style.lightingMood === option.id ? "" : option.id,
+                              },
+                            }))}
+                            className={`px-3 py-2 text-[12px] border transition cursor-pointer ${
+                              active
+                                ? "border-[var(--gold-primary)] bg-[var(--gold-transparent)] text-[var(--gold-primary)]"
+                                : "border-[var(--border-default)] text-[var(--text-secondary)] hover:border-[var(--gold-primary)]/60"
+                            }`}
+                            title={option.description}
+                          >
+                            {option.emoji} {option.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <span className="text-[11px] font-medium text-[var(--text-muted)] uppercase tracking-wider">镜头效果</span>
+                  <div className="grid grid-cols-2 xl:grid-cols-4 gap-2">
+                    {LENS_EFFECT_OPTIONS.map((option) => {
+                      const active = (consistency.style.lensEffects || []).includes(option.id);
+                      return (
+                        <button
+                          key={option.id}
+                          onClick={() => toggleLensEffect(option.id)}
+                          className={`flex flex-col items-start gap-1 p-2.5 border text-left transition cursor-pointer ${
+                            active
+                              ? "border-[var(--gold-primary)] bg-[var(--gold-transparent)] text-[var(--gold-primary)]"
+                              : "border-[var(--border-default)] bg-[var(--bg-card)] text-[var(--text-secondary)] hover:border-[var(--gold-primary)]/60"
+                          }`}
+                          title={option.description}
+                        >
+                          <span className="text-[12px] font-medium">{option.emoji} {option.label}</span>
+                          <span className="text-[10px] text-[var(--text-muted)] leading-relaxed">{option.description}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <span className="text-[10px] text-[var(--text-muted)]">
+                  这组组合风格会直接写入一致性上下文，不会覆盖下方手写风格文本或自定义缩略图预设。
+                </span>
               </div>
 
               {/* Row 2: Style prompt */}

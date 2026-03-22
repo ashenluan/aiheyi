@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   X, Check, Trash2, ChevronDown, Loader, Upload,
-  CheckCircle2, XCircle, Info, Image as ImageIcon,
+  CheckCircle2, XCircle, Info, Image as ImageIcon, Sparkles, RefreshCw,
 } from "lucide-react";
 import type { SoraCharacter, SoraCharCategory } from "../../lib/zhenzhen/types";
 import { SORA_CHAR_CATEGORY_LABEL } from "../../lib/zhenzhen/types";
@@ -53,6 +53,15 @@ type ModalPage = "select" | "uploading";
 /** 来源标签页 */
 type SourceTab = "all" | "studio" | "sora";
 
+interface SmartMatchCandidate {
+  id: string;
+  source: SourceTab;
+  category: SoraCharCategory;
+  name: string;
+  description?: string;
+  aliases?: string[];
+}
+
 interface SoraLibraryModalProps {
   open: boolean;
   onClose: () => void;
@@ -72,6 +81,69 @@ interface SoraLibraryModalProps {
   baseUrl: string;
   /** 上传适配器列表 */
   adapters?: CharUploadAdapter[];
+  /** 当前分镜/台词上下文，用于智能推荐素材 */
+  smartMatchText?: string;
+  /** 当前上下文标签，例如 EP01 · 组1 */
+  smartMatchLabel?: string;
+}
+
+function normalizeLoose(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s,，。！？、;；:：()（）【】《》〈〉「」『』"'`·•_\-\\/|]+/g, "");
+}
+
+function buildCandidateTokens(candidate: SmartMatchCandidate) {
+  const tokens = new Map<string, number>();
+  const pushToken = (value: string, score: number) => {
+    const normalized = normalizeLoose(value);
+    if (!normalized || normalized.length < 2) return;
+    const existing = tokens.get(normalized);
+    if (existing === undefined || score > existing) {
+      tokens.set(normalized, score);
+    }
+  };
+
+  pushToken(candidate.name, 0.84);
+  for (const alias of candidate.aliases || []) {
+    pushToken(alias, 0.8);
+  }
+
+  const dottedParts = candidate.name
+    .split(/[·•]/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (dottedParts.length > 1) {
+    pushToken(dottedParts[0], 0.78);
+  }
+
+  return tokens;
+}
+
+function localSmartMatchScore(text: string, candidate: SmartMatchCandidate) {
+  const normalizedText = normalizeLoose(text);
+  if (!normalizedText) return 0;
+
+  const tokens = buildCandidateTokens(candidate);
+  for (const [token, score] of tokens) {
+    if (normalizedText.includes(token) || (token.length >= 3 && token.includes(normalizedText))) {
+      return score;
+    }
+  }
+
+  const descriptionWords = normalizeLoose(candidate.description || "")
+    .split(/[,，。！？、;；:：]+/)
+    .filter((word) => word.length >= 2);
+  let hits = 0;
+  for (const word of descriptionWords) {
+    if (word && normalizedText.includes(word)) hits += 1;
+  }
+  if (hits >= 2) {
+    return Math.min(0.76, 0.62 + hits * 0.05);
+  }
+
+  return 0;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -89,6 +161,8 @@ export default function SoraLibraryModal({
   apiKey,
   baseUrl,
   adapters = [],
+  smartMatchText = "",
+  smartMatchLabel = "",
 }: SoraLibraryModalProps) {
   const [page, setPage] = useState<ModalPage>("select");
   const [filterCategory, setFilterCategory] = useState<SoraCharCategory | "all">("all");
@@ -100,6 +174,10 @@ export default function SoraLibraryModal({
   // 工作台一致性素材
   const [studioItems, setStudioItems] = useState<StudioItem[]>([]);
   const [studioLoading, setStudioLoading] = useState(false);
+  const [smartMatchLoading, setSmartMatchLoading] = useState(false);
+  const [smartMatchSummary, setSmartMatchSummary] = useState("");
+  const [recommendedSoraIds, setRecommendedSoraIds] = useState<Set<string>>(new Set());
+  const [recommendedStudioIds, setRecommendedStudioIds] = useState<Set<string>>(new Set());
 
   // ── 打开弹窗时加载工作台素材 ──
   useEffect(() => {
@@ -146,6 +224,9 @@ export default function SoraLibraryModal({
     setUploadDone(false);
     setFilterCategory("all");
     setSourceTab("all");
+    setSmartMatchSummary("");
+    setRecommendedSoraIds(new Set());
+    setRecommendedStudioIds(new Set());
     onClose();
   }, [onClose]);
 
@@ -200,6 +281,144 @@ export default function SoraLibraryModal({
 
   // 工作台素材被勾选的数量（只有工作台素材需要上传）
   const studioSelectionCount = studioItems.filter(s => uploadSelection.has(s.id)).length;
+  const smartCandidates = useMemo<SmartMatchCandidate[]>(() => {
+    const soraCandidates: SmartMatchCandidate[] = characters.map((char) => ({
+      id: char.id,
+      source: "sora",
+      category: char.category || "character",
+      name: char.nickname?.trim() || char.username,
+      description: char.nickname ? `@${char.username}` : undefined,
+      aliases: [char.username, char.nickname].filter((value): value is string => Boolean(value?.trim())),
+    }));
+    const studioCandidates: SmartMatchCandidate[] = studioItems.map((item) => ({
+      id: item.id,
+      source: "studio",
+      category: item.category,
+      name: item.name,
+      description: item.description,
+      aliases: [],
+    }));
+    return [...soraCandidates, ...studioCandidates];
+  }, [characters, studioItems]);
+
+  const smartRecommendationCount = recommendedSoraIds.size + recommendedStudioIds.size;
+
+  const runSmartMatchPreview = useCallback(async () => {
+    const text = smartMatchText.trim();
+    if (!text) {
+      setRecommendedSoraIds(new Set());
+      setRecommendedStudioIds(new Set());
+      setSmartMatchSummary("当前分镜还没有可用于推荐的提示词或台词。");
+      return;
+    }
+    if (smartCandidates.length === 0) {
+      setRecommendedSoraIds(new Set());
+      setRecommendedStudioIds(new Set());
+      setSmartMatchSummary("素材库里还没有可推荐的角色、场景或道具。");
+      return;
+    }
+
+    setSmartMatchLoading(true);
+    try {
+      const candidateMap = new Map(smartCandidates.map((candidate) => [candidate.id, candidate] as const));
+      const matchedIds = new Set<string>();
+      let apiMatches = 0;
+      let localMatches = 0;
+
+      try {
+        const payload = {
+          text,
+          limit: 8,
+          characters: smartCandidates
+            .filter((candidate) => candidate.category === "character")
+            .map(({ id, name, description, aliases }) => ({ id, name, description, aliases })),
+          scenes: smartCandidates
+            .filter((candidate) => candidate.category === "scene")
+            .map(({ id, name, description, aliases }) => ({ id, name, description, aliases })),
+          props: smartCandidates
+            .filter((candidate) => candidate.category === "prop")
+            .map(({ id, name, description, aliases }) => ({ id, name, description, aliases })),
+        };
+        const res = await fetch("/api/entity-match", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({})) as {
+          error?: string;
+          characters?: Array<{ id: string; score: number }>;
+          scenes?: Array<{ id: string; score: number }>;
+          props?: Array<{ id: string; score: number }>;
+        };
+        if (!res.ok) {
+          throw new Error(data.error || "智能匹配失败");
+        }
+        for (const match of [...(data.characters || []), ...(data.scenes || []), ...(data.props || [])]) {
+          if (match.score < 0.78 || matchedIds.has(match.id) || !candidateMap.has(match.id)) continue;
+          matchedIds.add(match.id);
+          apiMatches += 1;
+        }
+      } catch (error) {
+        console.warn("[SoraLibraryModal] entity-match 调用失败，回退本地匹配:", error);
+      }
+
+      const localFallback = smartCandidates
+        .map((candidate) => ({ id: candidate.id, score: localSmartMatchScore(text, candidate) }))
+        .filter((candidate) => candidate.score >= 0.74)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 8);
+      for (const match of localFallback) {
+        if (matchedIds.has(match.id)) continue;
+        matchedIds.add(match.id);
+        localMatches += 1;
+      }
+
+      const soraIds = new Set<string>();
+      const studioIds = new Set<string>();
+      for (const id of matchedIds) {
+        const candidate = candidateMap.get(id);
+        if (!candidate) continue;
+        if (candidate.source === "sora") soraIds.add(id);
+        if (candidate.source === "studio") studioIds.add(id);
+      }
+      setRecommendedSoraIds(soraIds);
+      setRecommendedStudioIds(studioIds);
+      setSmartMatchSummary(
+        matchedIds.size > 0
+          ? `已推荐 ${matchedIds.size} 项，AI 命中 ${apiMatches} 项，本地回退 ${localMatches} 项。`
+          : "当前分镜未命中可推荐素材，可先补充提示词、台词或素材昵称。",
+      );
+    } finally {
+      setSmartMatchLoading(false);
+    }
+  }, [smartCandidates, smartMatchText]);
+
+  const applySmartRecommendations = useCallback(() => {
+    const soraToAdd = Array.from(recommendedSoraIds).filter((id) => !selectedIds.includes(id));
+    const studioToAdd = Array.from(recommendedStudioIds).filter((id) => !uploadSelection.has(id));
+
+    for (const id of soraToAdd) {
+      onToggleSelect(id);
+    }
+    if (studioToAdd.length > 0) {
+      setUploadSelection((prev) => {
+        const next = new Set(prev);
+        for (const id of studioToAdd) next.add(id);
+        return next;
+      });
+    }
+
+    if (soraToAdd.length > 0 || studioToAdd.length > 0) {
+      setSmartMatchSummary(`已应用推荐：Sora ${soraToAdd.length} 项，工作台 ${studioToAdd.length} 项。`);
+    } else if (smartRecommendationCount > 0) {
+      setSmartMatchSummary("推荐已经应用完成，没有新增项。");
+    }
+  }, [onToggleSelect, recommendedSoraIds, recommendedStudioIds, selectedIds, smartRecommendationCount, uploadSelection]);
+
+  useEffect(() => {
+    if (!open) return;
+    void runSmartMatchPreview();
+  }, [open, runSmartMatchPreview]);
 
   // ── 开始上传（仅上传工作台素材） ──
   const startUpload = async () => {
@@ -307,6 +526,48 @@ export default function SoraLibraryModal({
                   {filteredList.length > 0 && filteredList.every(i => uploadSelection.has(getItemId(i))) ? "取消全选" : "全选"}
                 </button>
               </div>
+
+              <div className="px-5 py-2.5 border-t border-[var(--border-default)] bg-[#0F0F0F]">
+                <div className="flex items-start gap-2">
+                  <Sparkles size={13} className="text-purple-300 mt-0.5 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                      <span className="text-[10px] font-medium text-purple-300">智能推荐</span>
+                      {smartMatchLabel && (
+                        <span className="text-[8px] px-1.5 py-0.5 rounded border border-purple-500/20 bg-purple-500/10 text-purple-300/80">
+                          {smartMatchLabel}
+                        </span>
+                      )}
+                      {smartRecommendationCount > 0 && (
+                        <span className="text-[8px] px-1.5 py-0.5 rounded border border-amber-500/20 bg-amber-500/10 text-amber-300/80">
+                          已推荐 {smartRecommendationCount} 项
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[10px] leading-relaxed text-[var(--text-muted)]">
+                      {smartMatchLoading
+                        ? "正在分析当前分镜里的提示词和台词..."
+                        : smartMatchSummary || "会根据当前分镜的提示词和台词，为你推荐可注入的 Sora 素材和可上传的工作台素材。"}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => { void runSmartMatchPreview(); }}
+                      className="flex items-center gap-1 text-[9px] px-2.5 py-1 rounded border border-[var(--border-default)] text-[var(--text-secondary)] hover:border-purple-500/30 hover:text-purple-300 cursor-pointer transition"
+                    >
+                      <RefreshCw size={10} className={smartMatchLoading ? "animate-spin" : ""} />
+                      刷新
+                    </button>
+                    <button
+                      onClick={applySmartRecommendations}
+                      disabled={smartRecommendationCount === 0}
+                      className="text-[9px] px-2.5 py-1 rounded bg-purple-500/15 border border-purple-500/20 text-purple-300 hover:bg-purple-500/20 cursor-pointer transition disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      应用推荐
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* 列表 */}
@@ -334,6 +595,7 @@ export default function SoraLibraryModal({
                     const isUploadChecked = uploadSelection.has(id);
                     const cat = getItemCategory(item);
                     const catLabel = SORA_CHAR_CATEGORY_LABEL[cat];
+                    const isRecommended = item.kind === "sora" ? recommendedSoraIds.has(id) : recommendedStudioIds.has(id);
 
                     if (item.kind === "sora") {
                       const char = item.data;
@@ -341,7 +603,10 @@ export default function SoraLibraryModal({
                       return (
                         <div key={id}
                           className={`group flex items-center gap-3 px-3 py-2.5 rounded-lg transition border ${
-                            isUploadChecked ? "bg-purple-500/10 border-purple-500/30" : "bg-transparent border-transparent hover:bg-[#1A1A1A]"
+                            isSelected ? "bg-purple-500/10 border-purple-500/30" :
+                            isRecommended ? "bg-purple-500/5 border-purple-500/20" :
+                            isUploadChecked ? "bg-purple-500/10 border-purple-500/30" :
+                            "bg-transparent border-transparent hover:bg-[#1A1A1A]"
                           }`}>
                           {/* 勾选框（Sora 素材已在 API 侧，不参与上传） */}
                           <button onClick={() => toggleUploadSelect(id)}
@@ -369,6 +634,9 @@ export default function SoraLibraryModal({
                                 "bg-purple-500/20 text-purple-400"
                               }`}>{catLabel}</span>
                               <span className="text-[8px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-400/70 shrink-0">Sora</span>
+                              {isRecommended && (
+                                <span className="text-[8px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 shrink-0">智能推荐</span>
+                              )}
                               {isSelected && (
                                 <span className="text-[8px] px-1.5 py-0.5 rounded bg-purple-500/30 text-purple-300 shrink-0">已注入</span>
                               )}
@@ -392,7 +660,9 @@ export default function SoraLibraryModal({
                     return (
                       <div key={id}
                         className={`group flex items-center gap-3 px-3 py-2.5 rounded-lg transition border ${
-                          isUploadChecked ? "bg-amber-500/10 border-amber-500/30" : "bg-transparent border-transparent hover:bg-[#1A1A1A]"
+                          isUploadChecked ? "bg-amber-500/10 border-amber-500/30" :
+                          isRecommended ? "bg-amber-500/5 border-amber-500/20" :
+                          "bg-transparent border-transparent hover:bg-[#1A1A1A]"
                         }`}>
                         <button onClick={() => toggleUploadSelect(id)}
                           className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 cursor-pointer transition ${
@@ -419,6 +689,9 @@ export default function SoraLibraryModal({
                               "bg-purple-500/20 text-purple-400"
                             }`}>{catLabel}</span>
                             <span className="text-[8px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400/70 shrink-0">工作台</span>
+                            {isRecommended && (
+                              <span className="text-[8px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 shrink-0">智能推荐</span>
+                            )}
                           </div>
                           <span className="text-[10px] text-[var(--text-muted)] truncate mt-0.5">
                             {studio.description || "来自生图工作台一致性面板"}

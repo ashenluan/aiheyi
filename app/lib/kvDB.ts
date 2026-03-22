@@ -30,6 +30,7 @@ const MIRROR_PREFIXES = [
   "feicai-studio-state",
   "feicai-motion-prompts-",
   "feicai-smart-nine-prompts-",
+  "feicai-ai-entity-match-",
   "feicai-beat-prompts-",
   "feicai-pipeline-state",
   "feicai-system-prompts",

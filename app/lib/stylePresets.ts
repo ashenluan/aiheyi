@@ -11,6 +11,14 @@ export interface StylePreset {
   source: StylePresetSource;
 }
 
+export interface StyleDatabaseOption {
+  id: string;
+  label: string;
+  emoji: string;
+  prompt: string;
+  description: string;
+}
+
 const CUSTOM_STYLE_PRESETS_KEY = "feicai-style-presets";
 
 const BUILTIN_STYLE_PRESET_DEFS = [
@@ -44,6 +52,116 @@ export const BUILTIN_STYLE_PRESETS: StylePreset[] = BUILTIN_STYLE_PRESET_DEFS.ma
   previewImage: `/style-previews/${preset.id}.png`,
   source: "builtin",
 }));
+
+export const VISUAL_STYLE_OPTIONS: StyleDatabaseOption[] = [
+  { id: "cinematic-realism", label: "电影写实", emoji: "🎬", prompt: "cinematic realism, premium production design, grounded details, natural skin texture, believable materials, story-driven composition", description: "适合主流剧情片、现实向角色与高完成度叙事镜头" },
+  { id: "oriental-xianxia", label: "东方仙侠", emoji: "🐉", prompt: "oriental xianxia fantasy, celestial atmosphere, ornate costume design, floating mist, elegant magical energy, majestic Chinese fantasy worldbuilding", description: "更偏国风幻想、仙侠修真和华丽法术感" },
+  { id: "asian-aesthetic", label: "亚洲美学", emoji: "🌸", prompt: "refined asian aesthetics, delicate facial structure, polished styling, graceful silhouettes, premium beauty photography, elegant contemporary visuals", description: "突出五官精致、服化统一和高级人像质感" },
+  { id: "anime-cinema", label: "动画电影感", emoji: "🎞️", prompt: "animated cinematic look, expressive design, crisp silhouettes, rich color styling, emotionally readable staging, filmic anime lighting", description: "适合日漫、韩漫、动画电影式画面" },
+  { id: "dark-fantasy", label: "暗黑奇幻", emoji: "🦇", prompt: "dark fantasy epic, gothic atmosphere, textured ruins, moody contrast, dramatic weathering, mythic scale", description: "更适合史诗黑暗、哥特、怪物与压迫感世界观" },
+  { id: "cyber-future", label: "赛博未来", emoji: "🌃", prompt: "cyber future, neon density, high-tech surfaces, holographic glow, sleek urban futurism, layered sci-fi depth", description: "适合都市未来、霓虹夜景和科技题材" },
+  { id: "ink-eastern", label: "写意国风", emoji: "🎨", prompt: "eastern ink elegance, poetic negative space, calligraphic flow, restrained palette, painterly rhythm, Chinese classical mood", description: "适合水墨、工笔、东方叙事和意境表达" },
+  { id: "epic-sci-fi", label: "史诗科幻", emoji: "🚀", prompt: "epic science fiction, large-scale environments, engineered detail, cosmic grandeur, cinematic machinery, premium VFX spectacle", description: "适合太空、机甲、星际战场与硬核科幻" },
+];
+
+export const QUALITY_PRESET_OPTIONS: StyleDatabaseOption[] = [
+  { id: "standard-story", label: "标准叙事", emoji: "🧩", prompt: "clean storytelling image, balanced detail, stable composition, reliable readability, efficient generation", description: "优先保证稳定出图和信息表达" },
+  { id: "cinema-finish", label: "电影精修", emoji: "🎥", prompt: "premium cinematic finish, refined texture control, polished rendering, controlled contrast, premium production-grade details", description: "更强调电影级细节与完成度" },
+  { id: "poster-master", label: "海报终稿", emoji: "🖼️", prompt: "hero poster quality, highly polished surfaces, striking focal contrast, luxury-grade finishing, showcase-ready detail density", description: "适合关键视觉、封面和主宣海报" },
+];
+
+export const LENS_EFFECT_OPTIONS: StyleDatabaseOption[] = [
+  { id: "epic-wide", label: "广角史诗", emoji: "🌄", prompt: "epic wide-angle lens, strong spatial depth, dramatic foreground-background separation", description: "拉开空间层次，适合大场面与环境叙事" },
+  { id: "tele-compress", label: "长焦压缩", emoji: "🔭", prompt: "telephoto compression, layered depth compression, elegant subject isolation", description: "适合人像、群像和都市压缩透视" },
+  { id: "handheld-docu", label: "手持纪实", emoji: "🎥", prompt: "handheld documentary energy, organic framing, subtle motion tension, lived-in realism", description: "强化现场感和即时性" },
+  { id: "dream-soft", label: "柔焦梦境", emoji: "☁️", prompt: "soft focus dream haze, gentle bloom, silky highlights, romantic diffusion", description: "适合爱情、回忆、幻梦和唯美段落" },
+  { id: "macro-closeup", label: "微距特写", emoji: "🔍", prompt: "macro close-up emphasis, tactile detail rendering, intimate focal attention", description: "放大细节、材质和微表情" },
+  { id: "tracking-motion", label: "运动跟拍", emoji: "🏃", prompt: "dynamic tracking shot feel, directional motion energy, cinematic pursuit rhythm", description: "适合动作、追逐和连续运动镜头" },
+  { id: "dutch-tilt", label: "倾斜失衡", emoji: "🌀", prompt: "dutch tilt tension, psychological imbalance, stylized dramatic framing", description: "适合悬疑、危机和失序氛围" },
+  { id: "anamorphic-flare", label: "宽银幕炫光", emoji: "✨", prompt: "anamorphic lens character, cinematic horizontal flares, premium wide-screen optics", description: "强调大片镜头感和银幕质感" },
+];
+
+export const LIGHTING_MOOD_OPTIONS: StyleDatabaseOption[] = [
+  { id: "golden-hour", label: "鎏金日落", emoji: "🌇", prompt: "golden hour sunlight, amber rim light, warm atmospheric glow, emotional sunset contrast", description: "适合温暖、浪漫和回忆感场景" },
+  { id: "moonlit-blue", label: "冷月夜景", emoji: "🌙", prompt: "moonlit blue night, cool contrast, nocturnal hush, crisp silver-blue highlights", description: "适合夜戏、孤独和克制情绪" },
+  { id: "neon-rain", label: "霓虹夜雨", emoji: "🌧️", prompt: "neon rain reflections, wet surfaces, urban glow, moody cyber night atmosphere", description: "赛博、都市、夜雨和霓虹反射" },
+  { id: "studio-hardlight", label: "棚拍硬光", emoji: "💡", prompt: "hard studio key light, sharp specular contrast, premium editorial lighting", description: "适合角色定妆、海报和商业质感" },
+  { id: "candle-drama", label: "烛火戏剧", emoji: "🕯️", prompt: "candlelit drama, low-key warm highlights, intimate shadows, period atmosphere", description: "适合宫廷、古装、密室与情绪戏" },
+  { id: "backlit-silhouette", label: "逆光边缘", emoji: "🌤️", prompt: "backlit silhouette edges, glowing rim light, heroic contour separation", description: "适合英雄时刻、情绪高潮和轮廓表现" },
+  { id: "overcast-diffuse", label: "阴天漫射", emoji: "☁️", prompt: "overcast diffuse lighting, soft even skin tones, subdued contrast, calm realism", description: "适合日常戏、写实戏和柔和皮肤表现" },
+  { id: "stage-spotlight", label: "舞台聚光", emoji: "🎭", prompt: "stage spotlight focus, dramatic isolation, theatrical beams, centered dramatic emphasis", description: "适合舞台感、仪式感和高反差聚焦" },
+];
+
+function findOptionById(options: StyleDatabaseOption[], id?: string | null): StyleDatabaseOption | undefined {
+  if (!id) return undefined;
+  return options.find((option) => option.id === id);
+}
+
+export function getVisualStyleById(id?: string | null): StyleDatabaseOption | undefined {
+  return findOptionById(VISUAL_STYLE_OPTIONS, id);
+}
+
+export function getQualityPresetById(id?: string | null): StyleDatabaseOption | undefined {
+  return findOptionById(QUALITY_PRESET_OPTIONS, id);
+}
+
+export function getLightingMoodById(id?: string | null): StyleDatabaseOption | undefined {
+  return findOptionById(LIGHTING_MOOD_OPTIONS, id);
+}
+
+export function getLensEffectById(id?: string | null): StyleDatabaseOption | undefined {
+  return findOptionById(LENS_EFFECT_OPTIONS, id);
+}
+
+export function normalizeLensEffectIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const valid = new Set(LENS_EFFECT_OPTIONS.map((option) => option.id));
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    if (!valid.has(item) || seen.has(item)) continue;
+    seen.add(item);
+    normalized.push(item);
+  }
+  return normalized;
+}
+
+export function buildStyleDatabasePromptParts(input: {
+  visualStyle?: string | null;
+  qualityPreset?: string | null;
+  lensEffects?: string[] | null;
+  lightingMood?: string | null;
+}): string[] {
+  const parts: string[] = [];
+  const visual = getVisualStyleById(input.visualStyle);
+  const quality = getQualityPresetById(input.qualityPreset);
+  const lighting = getLightingMoodById(input.lightingMood);
+  const lens = normalizeLensEffectIds(input.lensEffects).map((id) => getLensEffectById(id)).filter(Boolean) as StyleDatabaseOption[];
+  if (visual) parts.push(`整体风格：${visual.label}；要求：${visual.prompt}`);
+  if (quality) parts.push(`画质档位：${quality.label}；要求：${quality.prompt}`);
+  if (lens.length > 0) parts.push(`镜头效果：${lens.map((item) => item.label).join("、")}；要求：${lens.map((item) => item.prompt).join("; ")}`);
+  if (lighting) parts.push(`光影预设：${lighting.label}；要求：${lighting.prompt}`);
+  return parts;
+}
+
+export function buildStyleDatabaseSummary(input: {
+  visualStyle?: string | null;
+  qualityPreset?: string | null;
+  lensEffects?: string[] | null;
+  lightingMood?: string | null;
+}): string {
+  const summary: string[] = [];
+  const visual = getVisualStyleById(input.visualStyle);
+  const quality = getQualityPresetById(input.qualityPreset);
+  const lighting = getLightingMoodById(input.lightingMood);
+  const lens = normalizeLensEffectIds(input.lensEffects).map((id) => getLensEffectById(id)).filter(Boolean) as StyleDatabaseOption[];
+  if (visual) summary.push(visual.label);
+  if (quality) summary.push(quality.label);
+  if (lens.length > 0) summary.push(lens.map((item) => item.label).join(" / "));
+  if (lighting) summary.push(lighting.label);
+  return summary.join(" · ");
+}
 
 function normalizeCustomPreset(value: unknown): StylePreset | null {
   if (!value || typeof value !== "object") return null;

@@ -28,6 +28,7 @@ import { formatPromptLanguage, resolveVideoPromptProfile, type PromptLanguage } 
 import { mergeDialogues, type ImportedDialogue } from "./lib/dialogues";
 import { buildStudioToVideoChecklist } from "../lib/workflowHandoff";
 import { buildOutputEntries, persistProvenanceManifest, summarizeAssetList } from "../lib/provenance/client";
+import { buildStyleDatabaseSummary } from "../lib/stylePresets";
 
 /**
  * Resize a data-URL image for vision API — shrink to maxDim and re-encode as JPEG.
@@ -1262,6 +1263,26 @@ export default function VideoPage() {
     : epState.mode === "batchRelay"
       ? (batchRelayPrompts[batchRelayActiveTab] ?? "")
       : (epState.prompts?.[epState.mode] ?? "");
+  const soraSmartMatchText = useMemo(() => {
+    const dialogueLines = currentBeatDialogues.map((dialogue) => `${dialogue.role}：${dialogue.text}`);
+    return [
+      currentPrompt.trim(),
+      ...dialogueLines,
+    ]
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join("\n");
+  }, [currentBeatDialogues, currentPrompt]);
+  const soraSmartMatchLabel = useMemo(() => {
+    const parts = [
+      episode.toUpperCase(),
+      `组${epState.selectedBeat + 1}`,
+    ];
+    if (epState.mode === "single") {
+      parts.push(`格${epState.selectedGrid + 1}`);
+    }
+    return parts.join(" · ");
+  }, [episode, epState.mode, epState.selectedBeat, epState.selectedGrid]);
   const videoHandoffChecklist = useMemo(
     () =>
       buildStudioToVideoChecklist({
@@ -2614,7 +2635,8 @@ export default function VideoPage() {
           }
           if (cst.style) {
             const st = cst.style;
-            contextParts.push(`【视觉风格】画风：${st.artStyle || "未设定"}，色调：${st.colorPalette || "未设定"}${st.stylePrompt ? `，风格提示：${st.stylePrompt}` : ""}`);
+            const styleDatabaseSummary = buildStyleDatabaseSummary(st);
+            contextParts.push(`【视觉风格】画风：${st.artStyle || "未设定"}，色调：${st.colorPalette || "未设定"}${styleDatabaseSummary ? `，风格数据库：${styleDatabaseSummary}` : ""}${st.stylePrompt ? `，风格提示：${st.stylePrompt}` : ""}`);
           }
         }
       } catch { /* ignore */ }
@@ -3491,6 +3513,8 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                   apiKey={selectedModel.apiKey || ""}
                   baseUrl={selectedModel.url?.replace(/\/+$/, "") || ""}
                   adapters={zhenzhenUploadAdapters}
+                  smartMatchText={soraSmartMatchText}
+                  smartMatchLabel={soraSmartMatchLabel}
                 />
 
                 <div className="flex items-start gap-1.5">

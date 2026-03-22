@@ -5,7 +5,18 @@ import { SINGLE_PASS_EXTRACT_PROMPT } from "@/app/lib/extractPrompts";
 import { BEAT_BREAKDOWN_PROMPT } from "@/app/lib/beatBreakdownPrompt";
 import { ANALYZE_SCRIPT_PROMPT } from "@/app/lib/analyzeScriptPrompt";
 import { SEEDANCE_OMNI_PROMPT, SEEDANCE_FIRST_FRAME_PROMPT, SEEDANCE_SIMPLE_PROMPT } from "@/app/lib/seedancePrompts";
-import { DIALOGUE_EMOTION_PROMPT, TRANSLATE_PROMPT, TRANSLATE_GRID_PROMPT, CONTINUOUS_ACTION_PROMPT } from "@/app/lib/defaultPrompts";
+import {
+  DIALOGUE_EMOTION_PROMPT,
+  TRANSLATE_PROMPT,
+  TRANSLATE_GRID_PROMPT,
+  TRANSLATE_SCENE_VIEW_PROMPT,
+  CONTINUOUS_ACTION_PROMPT,
+  CUSTOM_SCRIPT_IMPORT_PROMPT,
+  ENTITY_MATCH_PROMPT,
+  GRID_EXPAND_AGENT_PROMPT,
+  COSTUME_DESIGN_PROMPT,
+  RESTORE_STORYBOARD_PROMPT,
+} from "@/app/lib/defaultPrompts";
 import { resolveProjectRoot } from "@/app/lib/runtimePaths";
 import {
   STYLE_ANALYZE_PROMPT, UPSCALE_PROMPT,
@@ -127,7 +138,13 @@ export async function GET() {
     dialogueEmotion: DIALOGUE_EMOTION_PROMPT,
     translatePrompt: TRANSLATE_PROMPT,
     translateGridPrompt: TRANSLATE_GRID_PROMPT,
+    translateSceneViewPrompt: TRANSLATE_SCENE_VIEW_PROMPT,
     continuousAction: CONTINUOUS_ACTION_PROMPT,
+    restoreStoryboard: RESTORE_STORYBOARD_PROMPT,
+    customScriptImport: CUSTOM_SCRIPT_IMPORT_PROMPT,
+    entityMatch: ENTITY_MATCH_PROMPT,
+    gridExpandAgent: GRID_EXPAND_AGENT_PROMPT,
+    costumeDesignAgent: COSTUME_DESIGN_PROMPT,
     // ── AI 导演系统智能体提示词 ──
     directorAgent: DIRECTOR_SYSTEM_PROMPT,
     storyAgent: STORY_AGENT_DEFAULT_PROMPT,

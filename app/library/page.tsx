@@ -14,12 +14,13 @@ import {
   User, Mountain, Sword, Search, Plus, Trash2, X, Loader,
   ZoomIn, Upload, Save, Package, ChevronDown, Edit3, CheckSquare,
   RefreshCw,
-  ExternalLink, ArrowRightLeft, Check, ImagePlus,
+  ExternalLink, ArrowRightLeft, Check, ImagePlus, Bot, Sparkles,
 } from "lucide-react";
 import Sidebar from "../components/Sidebar";
 import type { ConsistencyProfile, CharacterRef, SceneRef, PropRef } from "../lib/consistency";
-import { deriveCharacterGrouping, loadConsistencyAsync, saveConsistency, restoreConsistencyImagesFromDisk, isValidImageRef } from "../lib/consistency";
+import { deriveCharacterGrouping, loadConsistencyAsync, loadSystemPromptsAsync, saveConsistency, restoreConsistencyImagesFromDisk, isValidImageRef } from "../lib/consistency";
 import { loadProjects, saveProjects, persistProjectToDisk, type ArchivedProject } from "../lib/projects";
+import { buildStyleDatabasePromptParts, buildStyleDatabaseSummary } from "../lib/stylePresets";
 import { isSoraModel, type SoraCharacter, type SoraCharCategory } from "../lib/zhenzhen/types";
 
 // ─── 类型 ───
@@ -82,6 +83,30 @@ interface BatchUploadTask {
   progress: string;
   error?: string;
 }
+
+interface CostumeVariant {
+  id: string;
+  label: string;
+  notes: string;
+  prompt: string;
+}
+
+interface EntityMatchResult {
+  id: string;
+  name: string;
+  score: number;
+  reason: string;
+}
+
+interface EntityMatchSection {
+  type: TabKey;
+  label: string;
+  results: Array<EntityMatchResult & { item: DisplayItem }>;
+}
+
+type LibraryImageGenMode = "api" | "geminiTab" | "jimeng";
+
+const LIBRARY_IMAGE_MODE_KEY = "feicai-library-image-mode";
 
 function loadSoraUploadRecords(): SoraUploadRecord[] {
   if (typeof window === "undefined") return [];
@@ -166,6 +191,12 @@ function resolveSoraUploadConfig(): SoraUploadConfig | null {
 // ─── nano-id 替代 ───
 function nanoId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function loadLibraryImageMode(): LibraryImageGenMode {
+  if (typeof window === "undefined") return "api";
+  const raw = localStorage.getItem(LIBRARY_IMAGE_MODE_KEY);
+  return raw === "geminiTab" || raw === "jimeng" ? raw : "api";
 }
 
 function sortCharacterStates(items: DisplayItem[]): DisplayItem[] {
@@ -341,7 +372,21 @@ export default function LibraryPage() {
   const [batchUploadRunning, setBatchUploadRunning] = useState(false);
   const [batchUploadTasks, setBatchUploadTasks] = useState<BatchUploadTask[]>([]);
   const [showBatchUploadModal, setShowBatchUploadModal] = useState(false);
+  const [costumeItem, setCostumeItem] = useState<DisplayItem | null>(null);
+  const [costumeNotes, setCostumeNotes] = useState("");
+  const [costumeVariants, setCostumeVariants] = useState<CostumeVariant[]>([]);
+  const [costumeLoading, setCostumeLoading] = useState(false);
+  const [costumeApplyingId, setCostumeApplyingId] = useState<string | null>(null);
+  const [costumeLockComposition, setCostumeLockComposition] = useState(true);
+  const [showEntityMatchModal, setShowEntityMatchModal] = useState(false);
+  const [entityMatchText, setEntityMatchText] = useState("");
+  const [entityMatchLoading, setEntityMatchLoading] = useState(false);
+  const [entityMatchError, setEntityMatchError] = useState("");
+  const [entityMatchResults, setEntityMatchResults] = useState<EntityMatchSection[]>([]);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const [libraryImageGenMode, setLibraryImageGenMode] = useState<LibraryImageGenMode>("api");
+  const [generatingImageIds, setGeneratingImageIds] = useState<Set<string>>(new Set());
+  const [batchGeneratingImages, setBatchGeneratingImages] = useState(false);
 
   // ── 归档项目图片缓存 ──
   // archiveDiskImages: 磁盘 serve URL（初始化时一次性批量检查）
@@ -398,6 +443,10 @@ export default function LibraryPage() {
 
   useEffect(() => {
     setSoraUploads(loadSoraUploadRecords());
+  }, []);
+
+  useEffect(() => {
+    setLibraryImageGenMode(loadLibraryImageMode());
   }, []);
 
   // ── 手动同步（深度加载 = 快速加载 + IDB 全表扫描） ──
@@ -551,6 +600,58 @@ export default function LibraryPage() {
     return items;
   }, [allItems, activeTab, sourceFilter, searchQuery]);
 
+  const entityMatchScopeItems = useMemo(() => {
+    if (sourceFilter === "current") {
+      return allItems.filter((item) => item.source === "current");
+    }
+    if (sourceFilter === "all") {
+      return allItems;
+    }
+    return allItems.filter((item) => item.source === sourceFilter);
+  }, [allItems, sourceFilter]);
+
+  const entityMatchCandidates = useMemo(() => {
+    const split = {
+      characters: [] as DisplayItem[],
+      scenes: [] as DisplayItem[],
+      props: [] as DisplayItem[],
+    };
+    for (const item of entityMatchScopeItems) {
+      split[item.type].push(item);
+    }
+    return split;
+  }, [entityMatchScopeItems]);
+
+  const entityMatchScopeStats = useMemo(() => ({
+    characters: entityMatchCandidates.characters.length,
+    scenes: entityMatchCandidates.scenes.length,
+    props: entityMatchCandidates.props.length,
+  }), [entityMatchCandidates]);
+
+  const costumeDesignContext = useMemo(() => {
+    const styleDatabaseSummary = buildStyleDatabaseSummary(consistency?.style || {});
+    const worldSetting = [
+      consistency?.style.timeSetting,
+      consistency?.style.artStyle,
+      consistency?.style.colorPalette,
+      styleDatabaseSummary,
+      consistency?.style.stylePresetLabel ? `${consistency.style.stylePresetEmoji || ""}${consistency.style.stylePresetLabel}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    const stylePrompt = [
+      consistency?.style.stylePrompt,
+      consistency?.style.additionalNotes,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    return {
+      styleDatabaseSummary,
+      worldSetting,
+      stylePrompt,
+    };
+  }, [consistency]);
+
   const characterGroupedView = useMemo(() => {
     if (activeTab !== "characters") {
       return { groups: [] as CharacterGroupView[], ungrouped: filteredItems };
@@ -656,6 +757,127 @@ export default function LibraryPage() {
     [soraUploads]
   );
 
+  const openEntityMatchModal = useCallback(() => {
+    setShowEntityMatchModal(true);
+    setEntityMatchError("");
+    if (!entityMatchText.trim() && searchQuery.trim()) {
+      setEntityMatchText(searchQuery.trim());
+    }
+  }, [entityMatchText, searchQuery]);
+
+  const closeEntityMatchModal = useCallback(() => {
+    if (entityMatchLoading) return;
+    setShowEntityMatchModal(false);
+  }, [entityMatchLoading]);
+
+  const handleFocusMatchedItem = useCallback((type: TabKey, item: DisplayItem) => {
+    setActiveTab(type);
+    setSourceFilter(item.source === "current" ? "current" : item.source);
+    setSourceDropdownOpen(false);
+    setSearchQuery(item.name);
+    setShowEntityMatchModal(false);
+  }, []);
+
+  const handleRunEntityMatch = useCallback(async () => {
+    const text = entityMatchText.trim();
+    if (!text) {
+      setEntityMatchError("请先输入要匹配的剧情、提示词或描述文本。");
+      setEntityMatchResults([]);
+      return;
+    }
+
+    if (entityMatchScopeItems.length === 0) {
+      setEntityMatchError("当前来源范围内没有可匹配的角色、场景或道具。");
+      setEntityMatchResults([]);
+      return;
+    }
+
+    setEntityMatchLoading(true);
+    setEntityMatchError("");
+    try {
+      const res = await fetch("/api/entity-match", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text,
+          limit: 6,
+          characters: entityMatchCandidates.characters.map((item) => ({
+            id: item.id,
+            name: item.name,
+            description: item.description,
+            aliases: item.aliases,
+          })),
+          scenes: entityMatchCandidates.scenes.map((item) => ({
+            id: item.id,
+            name: item.name,
+            description: item.description,
+            aliases: item.aliases,
+          })),
+          props: entityMatchCandidates.props.map((item) => ({
+            id: item.id,
+            name: item.name,
+            description: item.description,
+            aliases: item.aliases,
+          })),
+        }),
+      });
+      const data = await res.json().catch(() => ({})) as {
+        error?: string;
+        characters?: EntityMatchResult[];
+        scenes?: EntityMatchResult[];
+        props?: EntityMatchResult[];
+      };
+      if (!res.ok) {
+        throw new Error(data.error || "实体匹配失败");
+      }
+
+      const itemMaps = {
+        characters: new Map(entityMatchCandidates.characters.map((item) => [item.id, item])),
+        scenes: new Map(entityMatchCandidates.scenes.map((item) => [item.id, item])),
+        props: new Map(entityMatchCandidates.props.map((item) => [item.id, item])),
+      };
+
+      const orderedTabs = [
+        activeTab,
+        ...TABS.map((tab) => tab.key).filter((key) => key !== activeTab),
+      ] as TabKey[];
+
+      const sections = orderedTabs.map((key) => {
+        const label = TABS.find((tab) => tab.key === key)?.label || key;
+        const rawResults = Array.isArray(data[key]) ? data[key]! : [];
+        const results = rawResults
+          .map((result) => {
+            const item = itemMaps[key].get(result.id);
+            return item ? { ...result, item } : null;
+          })
+          .filter((result): result is EntityMatchResult & { item: DisplayItem } => Boolean(result));
+        return { type: key, label, results };
+      }).filter((section) => section.results.length > 0);
+
+      setEntityMatchResults(sections);
+      if (sections.length === 0) {
+        setEntityMatchError("没有找到明显匹配的角色、场景或道具，可以尝试换一段更具体的文本。");
+      }
+    } catch (error) {
+      setEntityMatchResults([]);
+      setEntityMatchError(error instanceof Error ? error.message : "实体匹配失败");
+    } finally {
+      setEntityMatchLoading(false);
+    }
+  }, [activeTab, entityMatchCandidates, entityMatchScopeItems.length, entityMatchText]);
+
+  useEffect(() => {
+    if (!showEntityMatchModal) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+        event.preventDefault();
+        handleRunEntityMatch();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleRunEntityMatch, showEntityMatchModal]);
+
   const persistSoraUpload = useCallback((sourceItem: DisplayItem, character: SoraCharacter) => {
     const cachedChars = (() => {
       try {
@@ -733,6 +955,374 @@ export default function LibraryPage() {
       fromTaskId: data.taskId || "",
     } satisfies SoraCharacter;
   }, [resolveUploadImageData]);
+
+  const currentWorkspaceItems = useMemo(
+    () => allItems.filter((item) => item.type === activeTab && item.source === "current"),
+    [allItems, activeTab]
+  );
+
+  const currentMissingImageCandidates = useMemo(
+    () => currentWorkspaceItems.filter((item) => !isValidImageRef(item.referenceImage)),
+    [currentWorkspaceItems]
+  );
+
+  const setLibraryImageMode = useCallback((mode: LibraryImageGenMode) => {
+    setLibraryImageGenMode(mode);
+    try {
+      localStorage.setItem(LIBRARY_IMAGE_MODE_KEY, mode);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const patchCurrentItem = useCallback(async (itemId: string, listKey: TabKey, patch: Partial<CharacterRef | SceneRef | PropRef>) => {
+    if (!consistency) return;
+    const updated: ConsistencyProfile = {
+      ...consistency,
+      characters: [...consistency.characters],
+      scenes: [...consistency.scenes],
+      props: [...consistency.props],
+      style: { ...consistency.style },
+    };
+    const list = [...updated[listKey]];
+    const idx = list.findIndex((entry) => entry.id === itemId);
+    if (idx === -1) return;
+    list[idx] = { ...list[idx], ...patch } as CharacterRef & SceneRef & PropRef;
+    updated[listKey] = list as typeof updated[typeof listKey];
+    await persistConsistency(updated);
+  }, [consistency, persistConsistency]);
+
+  const setGeneratingForItem = useCallback((itemId: string, active: boolean) => {
+    setGeneratingImageIds((prev) => {
+      const next = new Set(prev);
+      if (active) next.add(itemId);
+      else next.delete(itemId);
+      return next;
+    });
+  }, []);
+
+  const readImageSettings = useCallback(() => {
+    try {
+      const raw = localStorage.getItem("feicai-settings");
+      return raw ? JSON.parse(raw) as Record<string, string> : {};
+    } catch {
+      return {} as Record<string, string>;
+    }
+  }, []);
+
+  const ensureDataUrl = useCallback(async (imageUrl: string) => {
+    if (imageUrl.startsWith("data:")) return imageUrl;
+    const res = await fetch(imageUrl);
+    if (!res.ok) throw new Error("图片读取失败");
+    const blob = await res.blob();
+    return readBlobAsDataUrl(blob);
+  }, []);
+
+  const ensureGeminiTabReady = useCallback(async () => {
+    const headers: Record<string, string> = {};
+    try {
+      const raw = localStorage.getItem("feicai-gemini-tab-settings");
+      const parsed = raw ? JSON.parse(raw) : {};
+      if (parsed.serviceUrl) headers["x-gemini-tab-url"] = parsed.serviceUrl;
+    } catch {
+      // ignore
+    }
+
+    try {
+      const probe = await fetch(`/api/gemini-tab?path=${encodeURIComponent("/api/browser")}`, { headers });
+      if (probe.ok) {
+        const data = await probe.json().catch(() => null);
+        if (data?.reachable) return true;
+      }
+    } catch {
+      // continue to start service
+    }
+
+    const startRes = await fetch("/api/gemini-tab/start-service", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    if (!startRes.ok) return false;
+
+    for (let i = 0; i < 20; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      try {
+        const check = await fetch(`/api/gemini-tab?path=${encodeURIComponent("/api/browser")}`, { headers });
+        if (!check.ok) continue;
+        const data = await check.json().catch(() => null);
+        if (data?.reachable) return true;
+      } catch {
+        // keep waiting
+      }
+    }
+
+    return false;
+  }, []);
+
+  const buildLibraryImagePrompt = useCallback((item: DisplayItem) => {
+    const style = consistency?.style;
+    const styleDatabaseParts = buildStyleDatabasePromptParts(style || {});
+    const styleDatabaseSummary = buildStyleDatabaseSummary(style || {});
+    const styleHints = [
+      style?.artStyle ? `整体画风：${style.artStyle}` : "",
+      style?.colorPalette ? `色彩基调：${style.colorPalette}` : "",
+      style?.stylePresetLabel ? `风格预设：${style.stylePresetEmoji || "✨"}${style.stylePresetLabel}` : "",
+      styleDatabaseSummary ? `风格数据库：${styleDatabaseSummary}` : "",
+      ...styleDatabaseParts,
+      style?.timeSetting ? `时代/世界观：${style.timeSetting}` : "",
+      style?.stylePrompt ? `风格提示：${style.stylePrompt}` : "",
+      style?.additionalNotes ? `补充要求：${style.additionalNotes}` : "",
+    ]
+      .filter(Boolean)
+      .join(", ");
+
+    const basePrompt = item.prompt?.trim() || "";
+    const brief = [item.name, item.description].filter(Boolean).join("，");
+
+    if (item.type === "characters") {
+      return [
+        basePrompt || `${brief}，角色设定参考图`,
+        item.subType ? `${item.groupBase || item.name} · ${item.subType}` : "",
+        "single character design sheet, full body, premium concept art, clean background, expressive costume details",
+        "match current workspace style system, preserve consistent face, costume logic, silhouette language, and visual identity",
+        styleHints,
+        "no text, no watermark, no subtitle",
+      ].filter(Boolean).join(", ");
+    }
+
+    if (item.type === "scenes") {
+      return [
+        basePrompt || `${brief}，场景设定参考图`,
+        "environment concept sheet, cinematic wide shot, strong spatial layout, high detail lighting",
+        "match current workspace style system, preserve worldbuilding consistency, atmosphere continuity, and production-design language",
+        styleHints,
+        "no text, no watermark, no subtitle",
+      ].filter(Boolean).join(", ");
+    }
+
+    return [
+      basePrompt || `${brief}，道具设定参考图`,
+      "prop design sheet, centered composition, product concept render, high detail material study",
+      "match current workspace style system, preserve material language, craftsmanship detail, and silhouette readability",
+      styleHints,
+      "no text, no watermark, no subtitle",
+    ].filter(Boolean).join(", ");
+  }, [consistency]);
+
+  const persistGeneratedImage = useCallback(async (item: DisplayItem, generatedImage: string) => {
+    if (!consistency || item.source !== "current") {
+      throw new Error("仅支持更新当前工作台条目");
+    }
+
+    const dataUrl = await ensureDataUrl(generatedImage);
+    const postRes = await fetch("/api/ref-image", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: item.id, imageData: dataUrl }),
+    });
+    if (!postRes.ok) {
+      const body = await postRes.json().catch(() => ({}));
+      throw new Error(body.error || "保存生成图片失败");
+    }
+
+    const imageRef = `/api/ref-image?serve=${encodeURIComponent(item.id)}&_t=${Date.now()}`;
+    const updated = { ...consistency };
+    updated[item.type] = updated[item.type].map((entry: CharacterRef & SceneRef & PropRef) =>
+      entry.id === item.id ? { ...entry, referenceImage: imageRef } : entry
+    );
+    await persistConsistency(updated);
+    return imageRef;
+  }, [consistency, ensureDataUrl, persistConsistency]);
+
+  const generateImageForItem = useCallback(async (item: DisplayItem, silent = false) => {
+    if (item.source !== "current") {
+      throw new Error("仅支持当前工作台条目生成");
+    }
+
+    const prompt = buildLibraryImagePrompt(item);
+    const settings = readImageSettings();
+    const aspectRatio = item.type === "characters" ? "9:16" : item.type === "props" ? "1:1" : (consistency?.style?.aspectRatio || settings["img-aspect-ratio"] || "16:9");
+    const imageSize = consistency?.style?.resolution || settings["img-size"] || "2K";
+    const styleRefs = consistency?.style?.styleImage && isValidImageRef(consistency.style.styleImage)
+      ? [consistency.style.styleImage]
+      : [];
+
+    if (libraryImageGenMode === "api") {
+      const apiKey = settings["img-key"];
+      if (!apiKey) throw new Error("请先在设置页配置图像 API Key");
+
+      const res = await fetch("/api/image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiKey,
+          baseUrl: settings["img-url"],
+          model: settings["img-model"],
+          prompt,
+          referenceImages: styleRefs.length > 0 ? styleRefs : undefined,
+          imageSize,
+          aspectRatio,
+          format: settings["img-format"] || "gemini",
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "图像生成失败");
+      const generated = data.images?.[0] || "";
+      if (!generated) throw new Error("未拿到生成图片");
+      await persistGeneratedImage(item, generated);
+      if (!silent) alert(`✅ 已为「${item.name}」生成参考图`);
+      return;
+    }
+
+    if (libraryImageGenMode === "geminiTab") {
+      const ok = await ensureGeminiTabReady();
+      if (!ok) throw new Error("Gemini Tab 服务未就绪");
+
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      let geminiMode = "pro";
+      let downloadMode = "manual";
+      try {
+        const raw = localStorage.getItem("feicai-gemini-tab-settings");
+        const parsed = raw ? JSON.parse(raw) : {};
+        if (parsed.serviceUrl) headers["x-gemini-tab-url"] = parsed.serviceUrl;
+        if (parsed.geminiMode) geminiMode = parsed.geminiMode;
+        if (parsed.downloadMode) downloadMode = parsed.downloadMode;
+      } catch {
+        // ignore
+      }
+
+      const res = await fetch(`/api/gemini-tab?path=${encodeURIComponent("/api/generate")}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          tasks: [{
+            taskId: `library-${Date.now()}-${item.id}`,
+            prompt,
+            referenceImages: styleRefs.length > 0 ? styleRefs : undefined,
+            mode: geminiMode,
+            downloadMode,
+          }],
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Gemini Tab 生成失败");
+      const generated = data.results?.[0]?.imageBase64 || "";
+      if (!generated) throw new Error(data.results?.[0]?.error || "未拿到生成图片");
+      await persistGeneratedImage(item, generated);
+      if (!silent) alert(`✅ 已为「${item.name}」生成参考图`);
+      return;
+    }
+
+    const seedanceRaw = localStorage.getItem("feicai-seedance-settings");
+    const seedanceSettings = seedanceRaw ? JSON.parse(seedanceRaw) as Record<string, string> : {};
+    const sessionId = String(seedanceSettings.sessionId || "");
+    const webId = String(seedanceSettings.webId || "");
+    const userId = String(seedanceSettings.userId || "");
+    const rawCookies = String(seedanceSettings.jimengRawCookies || "");
+    if (!sessionId || !webId || !userId) {
+      throw new Error("请先在 Seedance 页面配置即梦凭证");
+    }
+
+    let jimengModel = "seedream-5.0";
+    let jimengResolution = imageSize === "4K" ? "4K" : "2K";
+    try {
+      const stateRes = await fetch("/api/jimeng-image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "load-page-state" }),
+      });
+      const stateData = await stateRes.json().catch(() => ({}));
+      if (stateRes.ok && stateData.state) {
+        jimengModel = stateData.state.model || jimengModel;
+        jimengResolution = stateData.state.resolution || jimengResolution;
+      }
+    } catch {
+      // ignore
+    }
+
+    const startRes = await fetch("/api/jimeng-image", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "generate",
+        prompt: prompt.slice(0, 1200),
+        model: jimengModel,
+        ratio: aspectRatio,
+        resolution: jimengResolution,
+        count: 1,
+        sessionId,
+        webId,
+        userId,
+        rawCookies: rawCookies || undefined,
+        referenceImages: styleRefs.length > 0 ? styleRefs : undefined,
+      }),
+    });
+    const startData = await startRes.json().catch(() => ({}));
+    if (!startRes.ok || !startData.taskId) throw new Error(startData.error || "即梦任务创建失败");
+
+    let generatedUrl = "";
+    for (let i = 0; i < 60; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+      const statusRes = await fetch("/api/jimeng-image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "status", taskId: startData.taskId }),
+      });
+      const statusData = await statusRes.json().catch(() => ({}));
+      if (!statusRes.ok) throw new Error(statusData.error || "即梦状态查询失败");
+      if (statusData.status === "done") {
+        generatedUrl = statusData.results?.[0] || "";
+        break;
+      }
+      if (statusData.status === "error") {
+        throw new Error(statusData.error || "即梦生成失败");
+      }
+    }
+    if (!generatedUrl) throw new Error("即梦生成超时，请稍后在即梦页查看结果");
+
+    await persistGeneratedImage(item, generatedUrl);
+    if (!silent) alert(`✅ 已为「${item.name}」生成参考图`);
+  }, [buildLibraryImagePrompt, consistency, ensureGeminiTabReady, libraryImageGenMode, persistGeneratedImage, readImageSettings]);
+
+  const handleGenerateSingleImage = useCallback(async (item: DisplayItem) => {
+    if (generatingImageIds.has(item.id)) return;
+    setGeneratingForItem(item.id, true);
+    try {
+      await generateImageForItem(item);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "生成失败");
+    } finally {
+      setGeneratingForItem(item.id, false);
+    }
+  }, [generateImageForItem, generatingImageIds, setGeneratingForItem]);
+
+  const handleBatchFillMissingImages = useCallback(async () => {
+    if (currentMissingImageCandidates.length === 0) {
+      alert(`当前${tabLabel}没有缺图条目`);
+      return;
+    }
+    if (!confirm(`将为当前工作台缺图的 ${currentMissingImageCandidates.length} 个${tabLabel}依次生成参考图，确定继续吗？`)) {
+      return;
+    }
+
+    setBatchGeneratingImages(true);
+    try {
+      for (const item of currentMissingImageCandidates) {
+        setGeneratingForItem(item.id, true);
+        try {
+          await generateImageForItem(item, true);
+        } catch (error) {
+          console.warn("[Library] 批量生图失败:", item.name, error);
+        } finally {
+          setGeneratingForItem(item.id, false);
+        }
+      }
+      alert(`✅ 当前工作台缺图${tabLabel}已批量处理完成`);
+    } finally {
+      setBatchGeneratingImages(false);
+    }
+  }, [currentMissingImageCandidates, generateImageForItem, setGeneratingForItem, tabLabel]);
 
   // ── 新增条目 ──
   const handleAdd = useCallback(async () => {
@@ -1184,6 +1774,102 @@ export default function LibraryPage() {
     setBatchUploadRunning(false);
   }, [createSoraCharacter, currentUploadCandidates, persistSoraUpload, tabLabel]);
 
+  const closeCostumeModal = useCallback(() => {
+    setCostumeItem(null);
+    setCostumeNotes("");
+    setCostumeVariants([]);
+    setCostumeLoading(false);
+    setCostumeApplyingId(null);
+  }, []);
+
+  const openCostumeDesign = useCallback(async (item: DisplayItem) => {
+    setCostumeItem(item);
+    setCostumeNotes(item.description || "");
+    setCostumeVariants([]);
+    setCostumeLockComposition(Boolean(item.referenceImage));
+    setCostumeLoading(true);
+
+    try {
+      const prompts = await loadSystemPromptsAsync();
+      const res = await fetch("/api/costume-design", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          characterName: item.name,
+          worldSetting: costumeDesignContext.worldSetting,
+          outfitBrief: item.description || "",
+          stylePrompt: costumeDesignContext.stylePrompt,
+          lockComposition: Boolean(item.referenceImage),
+          referenceHint: item.referenceImage ? `${item.name} existing reference sheet` : "",
+          customPrompt: prompts.costumeDesignAgent || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "服装设计生成失败");
+      setCostumeVariants(Array.isArray(data.variants) ? data.variants : []);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "服装设计生成失败");
+    } finally {
+      setCostumeLoading(false);
+    }
+  }, [costumeDesignContext]);
+
+  const regenerateCostumeVariants = useCallback(async () => {
+    if (!costumeItem) return;
+    setCostumeLoading(true);
+    try {
+      const prompts = await loadSystemPromptsAsync();
+      const res = await fetch("/api/costume-design", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          characterName: costumeItem.name,
+          worldSetting: costumeDesignContext.worldSetting,
+          outfitBrief: costumeNotes || costumeItem.description || "",
+          stylePrompt: costumeDesignContext.stylePrompt,
+          lockComposition: costumeLockComposition,
+          referenceHint: costumeItem.referenceImage ? `${costumeItem.name} existing reference sheet` : "",
+          customPrompt: prompts.costumeDesignAgent || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "服装设计生成失败");
+      setCostumeVariants(Array.isArray(data.variants) ? data.variants : []);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "服装设计生成失败");
+    } finally {
+      setCostumeLoading(false);
+    }
+  }, [costumeDesignContext, costumeItem, costumeLockComposition, costumeNotes]);
+
+  const applyCostumeVariant = useCallback(async (variant: CostumeVariant, generateNow: boolean) => {
+    if (!costumeItem) return;
+    setCostumeApplyingId(variant.id);
+    try {
+      const suffix = costumeLockComposition && costumeItem.referenceImage
+        ? "Preserve original composition, camera angle, character pose, framing, and background while replacing only the costume design."
+        : "";
+      const mergedPrompt = [variant.prompt, suffix].filter(Boolean).join(" ");
+      const mergedDescription = [costumeItem.description, costumeNotes].filter(Boolean).join(" / ").trim() || variant.notes;
+      await patchCurrentItem(costumeItem.id, "characters", {
+        description: mergedDescription,
+        prompt: mergedPrompt,
+      });
+      if (generateNow) {
+        await handleGenerateSingleImage({
+          ...costumeItem,
+          description: mergedDescription,
+          prompt: mergedPrompt,
+        });
+      }
+      closeCostumeModal();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "应用服装方案失败");
+    } finally {
+      setCostumeApplyingId(null);
+    }
+  }, [closeCostumeModal, costumeItem, costumeLockComposition, costumeNotes, handleGenerateSingleImage, patchCurrentItem]);
+
   const renderItemCard = useCallback((item: DisplayItem) => {
     const isCurrent = item.source === "current";
     const itemKey = `${item.source}-${item.id}`;
@@ -1244,6 +1930,25 @@ export default function LibraryPage() {
 
           {!multiSelectMode && (
           <div className="absolute top-2 right-2 flex gap-1">
+            {isCurrent && (
+              <button
+                onClick={(e) => { e.stopPropagation(); handleGenerateSingleImage(item); }}
+                disabled={generatingImageIds.has(item.id)}
+                className="flex items-center justify-center w-7 h-7 rounded-full bg-black/60 text-cyan-300 hover:bg-cyan-500 hover:text-white transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                title={item.referenceImage ? "重新生成参考图" : "一键生成参考图"}
+              >
+                {generatingImageIds.has(item.id) ? <Loader size={12} className="animate-spin" /> : <Bot size={11} />}
+              </button>
+            )}
+            {isCurrent && item.type === "characters" && (
+              <button
+                onClick={(e) => { e.stopPropagation(); openCostumeDesign(item); }}
+                className="flex items-center justify-center w-7 h-7 rounded-full bg-black/60 text-amber-300 hover:bg-amber-500 hover:text-black transition cursor-pointer"
+                title="服装设计"
+              >
+                <Sparkles size={11} />
+              </button>
+            )}
             {isCurrent && item.referenceImage && isValidImageRef(item.referenceImage) && (
               <button
                 onClick={(e) => { e.stopPropagation(); handleUploadSingleToSora(item); }}
@@ -1370,11 +2075,14 @@ export default function LibraryPage() {
     );
   }, [
     activeTab,
+    generatingImageIds,
     getSoraUploadRecord,
     handleDelete,
+    handleGenerateSingleImage,
     handleMoveItem,
     handleUploadSingleToSora,
     multiSelectMode,
+    openCostumeDesign,
     openEdit,
     selectedIds,
     uploadingItemId,
@@ -1479,6 +2187,48 @@ export default function LibraryPage() {
               </div>
             )}
           </div>
+
+          <div className="flex items-center bg-[var(--bg-surface)] border border-[var(--border-default)] rounded p-0.5">
+            {([
+              { key: "api", label: "API" },
+              { key: "geminiTab", label: "Gemini Tab" },
+              { key: "jimeng", label: "即梦" },
+            ] as Array<{ key: LibraryImageGenMode; label: string }>).map((mode) => (
+              <button
+                key={mode.key}
+                onClick={() => setLibraryImageMode(mode.key)}
+                className={`px-3 py-1.5 text-[11px] font-medium transition cursor-pointer ${
+                  libraryImageGenMode === mode.key
+                    ? "bg-[var(--gold-primary)] text-[#0A0A0A]"
+                    : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+                }`}
+                title={`角色库一键生图使用 ${mode.label} 模式`}
+              >
+                {mode.label}
+              </button>
+            ))}
+          </div>
+
+          <button
+            onClick={handleBatchFillMissingImages}
+            disabled={batchGeneratingImages || currentMissingImageCandidates.length === 0}
+            className="flex items-center gap-1.5 px-3 py-2 border border-[var(--border-default)] rounded text-[12px] text-[var(--text-secondary)] hover:border-[var(--gold-primary)] hover:text-[var(--gold-primary)] transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            title={`一键补齐当前工作台缺图的${tabLabel}`}
+          >
+            {batchGeneratingImages ? <Loader size={13} className="animate-spin" /> : <ImagePlus size={13} />}
+            一键补齐缺图
+            <span className="text-[10px] text-[var(--text-muted)]">({currentMissingImageCandidates.length})</span>
+          </button>
+
+          <button
+            onClick={openEntityMatchModal}
+            disabled={entityMatchScopeItems.length === 0}
+            className="flex items-center gap-1.5 px-3 py-2 border border-[var(--border-default)] rounded text-[12px] text-[var(--text-secondary)] hover:border-[var(--gold-primary)] hover:text-[var(--gold-primary)] transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            title="粘贴一段剧情或提示词，快速匹配最相关的角色、场景、道具"
+          >
+            <Bot size={13} />
+            智能匹配
+          </button>
 
           <div className="flex-1" />
 
@@ -1848,6 +2598,319 @@ export default function LibraryPage() {
                 <Save size={14} />
                 {saving ? "保存中..." : "保存修改"}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── 智能匹配弹窗 ── */}
+      {showEntityMatchModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !entityMatchLoading) closeEntityMatchModal();
+          }}
+        >
+          <div className="flex w-[880px] max-h-[82vh] flex-col overflow-hidden rounded-xl border border-[var(--border-default)] bg-[var(--bg-panel)] shadow-2xl">
+            <div className="flex items-center justify-between border-b border-[var(--border-default)] px-6 py-4">
+              <div>
+                <span className="text-[15px] font-semibold text-[var(--text-primary)]">智能匹配</span>
+                <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+                  粘贴剧情、分镜描述或提示词，快速定位最匹配的角色、场景和道具。
+                </p>
+              </div>
+              <button
+                onClick={closeEntityMatchModal}
+                disabled={entityMatchLoading}
+                className="p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] transition cursor-pointer disabled:opacity-50"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="grid min-h-0 flex-1 grid-cols-[320px_minmax(0,1fr)]">
+              <div className="flex flex-col gap-4 border-r border-[var(--border-default)] px-5 py-5">
+                <div className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.22em] text-[var(--text-muted)]">匹配范围</div>
+                  <div className="mt-2 text-[14px] font-medium text-[var(--text-primary)]">{currentSourceLabel}</div>
+                  <div className="mt-1 text-[10px] text-[var(--text-muted)]">
+                    当前优先展示：{TABS.find((tab) => tab.key === activeTab)?.label || "当前分类"}
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-2 text-[10px] text-[var(--text-muted)]">
+                    <span className="rounded-full border border-[var(--border-default)] px-2 py-0.5">角色 {entityMatchScopeStats.characters}</span>
+                    <span className="rounded-full border border-[var(--border-default)] px-2 py-0.5">场景 {entityMatchScopeStats.scenes}</span>
+                    <span className="rounded-full border border-[var(--border-default)] px-2 py-0.5">道具 {entityMatchScopeStats.props}</span>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] font-medium text-[var(--text-muted)]">待匹配文本</label>
+                  <textarea
+                    value={entityMatchText}
+                    onChange={(e) => setEntityMatchText(e.target.value)}
+                    rows={12}
+                    placeholder={`例如：\n雨夜巷口，林骁穿黑色长风衣，手里握着旧式金属手枪，背后是闪烁霓虹与积水反光。`}
+                    className="resize-none rounded border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2 text-[12px] leading-relaxed text-[var(--text-primary)] outline-none focus:border-[var(--gold-primary)] transition"
+                  />
+                  <p className="text-[10px] leading-relaxed text-[var(--text-muted)]">
+                    会优先命中实体名称、别名和描述关键词。建议输入 1-3 句关键描述，效果更稳定。
+                  </p>
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {searchQuery.trim() && (
+                      <button
+                        onClick={() => setEntityMatchText(searchQuery.trim())}
+                        className="rounded-full border border-[var(--border-default)] px-2.5 py-1 text-[10px] text-[var(--text-secondary)] transition hover:border-[var(--gold-primary)] hover:text-[var(--gold-primary)] cursor-pointer"
+                      >
+                        带入当前搜索词
+                      </button>
+                    )}
+                    {[
+                      "雨夜巷口，林骁穿黑色长风衣，背后霓虹反光。",
+                      "古城主殿内，穹顶烛火摇曳，中央悬着王冠圣器。",
+                    ].map((sample) => (
+                      <button
+                        key={sample}
+                        onClick={() => setEntityMatchText(sample)}
+                        className="rounded-full border border-[var(--border-default)] px-2.5 py-1 text-[10px] text-[var(--text-secondary)] transition hover:border-[var(--gold-primary)] hover:text-[var(--gold-primary)] cursor-pointer"
+                      >
+                        使用示例
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleRunEntityMatch}
+                  disabled={entityMatchLoading || entityMatchScopeItems.length === 0}
+                  className="flex items-center justify-center gap-2 rounded-xl border border-[var(--gold-primary)]/30 bg-[var(--gold-primary)]/10 px-4 py-2 text-[12px] font-medium text-[var(--gold-primary)] transition hover:bg-[var(--gold-primary)]/15 cursor-pointer disabled:opacity-50"
+                >
+                  {entityMatchLoading ? <Loader size={14} className="animate-spin" /> : <Bot size={14} />}
+                  {entityMatchLoading ? "匹配中..." : "开始智能匹配"}
+                </button>
+                <p className="text-[10px] text-[var(--text-muted)]">
+                  快捷键：<span className="text-[var(--text-secondary)]">Ctrl / Cmd + Enter</span>
+                </p>
+              </div>
+
+              <div className="min-h-0 overflow-y-auto px-5 py-5">
+                <div className="flex flex-col gap-4">
+                  {entityMatchError && (
+                    <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-[12px] leading-relaxed text-amber-200">
+                      {entityMatchError}
+                    </div>
+                  )}
+
+                  {!entityMatchError && !entityMatchResults.length && !entityMatchLoading && (
+                    <div className="rounded-2xl border border-dashed border-[var(--border-default)] px-6 py-10 text-center text-[12px] text-[var(--text-muted)]">
+                      输入一段剧情或提示词后点击“开始智能匹配”，结果会按角色、场景、道具分组展示。
+                    </div>
+                  )}
+
+                  {entityMatchResults.map((section) => (
+                    <section key={section.type} className="flex flex-col gap-3">
+                      <div className="flex items-center justify-between">
+                        <div className="text-[13px] font-semibold text-[var(--text-primary)]">{section.label}</div>
+                        <span className="text-[10px] text-[var(--text-muted)]">{section.results.length} 条候选</span>
+                      </div>
+                      <div className="grid grid-cols-1 gap-3">
+                        {section.results.map((result) => (
+                          <div key={`${section.type}-${result.id}`} className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-4 shadow-[var(--theme-shadow-soft)]">
+                            <div className="flex items-start justify-between gap-4">
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[14px] font-medium text-[var(--text-primary)]">{result.item.name}</span>
+                                  <span className="rounded-full border border-[var(--gold-primary)]/20 bg-[var(--gold-primary)]/10 px-2 py-0.5 text-[9px] text-[var(--gold-primary)]">
+                                    {Math.round(result.score * 100)}%
+                                  </span>
+                                  {result.item.source !== "current" && (
+                                    <span className="text-[10px] text-[var(--text-muted)]">{result.item.sourceName}</span>
+                                  )}
+                                </div>
+                                {result.item.description && (
+                                  <p className="mt-1 text-[11px] leading-relaxed text-[var(--text-muted)] line-clamp-2">
+                                    {result.item.description}
+                                  </p>
+                                )}
+                                {result.item.aliases && result.item.aliases.length > 0 && (
+                                  <p className="mt-1 text-[10px] text-[var(--text-muted)] line-clamp-1">
+                                    别名：{result.item.aliases.join("、")}
+                                  </p>
+                                )}
+                                <p className="mt-2 text-[10px] text-[var(--text-secondary)]">命中原因：{result.reason}</p>
+                              </div>
+                              <button
+                                onClick={() => handleFocusMatchedItem(section.type, result.item)}
+                                className="shrink-0 rounded-lg bg-[var(--gold-primary)] px-3 py-1.5 text-[11px] font-medium text-[#0A0A0A] transition hover:brightness-110 cursor-pointer"
+                              >
+                                定位到条目
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── 服装设计弹窗 ── */}
+      {costumeItem && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !costumeLoading && !costumeApplyingId) closeCostumeModal();
+          }}
+        >
+          <div className="flex w-[920px] max-h-[82vh] flex-col overflow-hidden rounded-xl border border-[var(--border-default)] bg-[#161616] shadow-2xl">
+            <div className="flex items-center justify-between border-b border-[var(--border-default)] px-6 py-4">
+              <div>
+                <span className="text-[15px] font-semibold text-[var(--text-primary)]">服装设计</span>
+                <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+                  为 {costumeItem.name} 生成高定级服装方案，并可直接写回角色提示词。
+                </p>
+              </div>
+              <button
+                onClick={closeCostumeModal}
+                disabled={costumeLoading || !!costumeApplyingId}
+                className="p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] transition cursor-pointer disabled:opacity-50"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="grid min-h-0 flex-1 grid-cols-[300px_minmax(0,1fr)]">
+              <div className="flex flex-col gap-4 border-r border-[var(--border-default)] px-5 py-5">
+                <div className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.22em] text-[var(--text-muted)]">角色基础</div>
+                  <div className="mt-2 text-[14px] font-medium text-[var(--text-primary)]">{costumeItem.name}</div>
+                  <div className="mt-2 flex flex-wrap gap-2 text-[10px]">
+                    <span className="rounded-full border border-[var(--border-default)] px-2 py-0.5 text-[var(--text-secondary)]">
+                      {costumeItem.referenceImage ? "已接入参考图" : "纯文本设计"}
+                    </span>
+                    {costumeLockComposition && costumeItem.referenceImage && (
+                      <span className="rounded-full border border-[var(--gold-primary)]/20 bg-[var(--gold-primary)]/10 px-2 py-0.5 text-[var(--gold-primary)]">
+                        构图锁定
+                      </span>
+                    )}
+                  </div>
+                  {costumeItem.description && (
+                    <p className="mt-1 text-[11px] leading-relaxed text-[var(--text-muted)] line-clamp-4">
+                      {costumeItem.description}
+                    </p>
+                  )}
+                </div>
+
+                {(costumeDesignContext.worldSetting || costumeDesignContext.stylePrompt) && (
+                  <div className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-3">
+                    <div className="text-[10px] uppercase tracking-[0.22em] text-[var(--text-muted)]">工作台风格上下文</div>
+                    {costumeDesignContext.worldSetting && (
+                      <p className="mt-2 text-[11px] leading-relaxed text-[var(--text-secondary)]">
+                        世界观 / 风格：{costumeDesignContext.worldSetting}
+                      </p>
+                    )}
+                    {costumeDesignContext.stylePrompt && (
+                      <p className="mt-2 text-[11px] leading-relaxed text-[var(--text-muted)]">
+                        风格补充：{costumeDesignContext.stylePrompt}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] font-medium text-[var(--text-muted)]">服装需求补充</label>
+                  <textarea
+                    value={costumeNotes}
+                    onChange={(e) => setCostumeNotes(e.target.value)}
+                    rows={7}
+                    placeholder="补充材质、廓形、功能定位、文化背景、剧情用途等..."
+                    className="resize-none rounded border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2 text-[12px] text-[var(--text-primary)] outline-none focus:border-[var(--gold-primary)] transition"
+                  />
+                </div>
+
+                <label className="flex items-start gap-2 rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={costumeLockComposition}
+                    onChange={(e) => setCostumeLockComposition(e.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <div className="flex flex-col">
+                    <span className="text-[11px] font-medium text-[var(--text-primary)]">锁定原图构图</span>
+                    <span className="text-[10px] leading-relaxed text-[var(--text-muted)]">
+                      尽量保留当前参考图的镜头角度、姿势、光线与背景，只替换服装设计。
+                    </span>
+                  </div>
+                </label>
+
+                <button
+                  onClick={regenerateCostumeVariants}
+                  disabled={costumeLoading}
+                  className="flex items-center justify-center gap-2 rounded-xl border border-[var(--gold-primary)]/30 bg-[var(--gold-primary)]/10 px-4 py-2 text-[12px] font-medium text-[var(--gold-primary)] transition hover:bg-[var(--gold-primary)]/15 cursor-pointer disabled:opacity-50"
+                >
+                  {costumeLoading ? <Loader size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                  重新生成方案
+                </button>
+              </div>
+
+              <div className="min-h-0 overflow-y-auto px-5 py-5">
+                {costumeLoading ? (
+                  <div className="flex h-full items-center justify-center gap-2 text-[12px] text-[var(--text-muted)]">
+                    <Loader size={16} className="animate-spin text-[var(--gold-primary)]" />
+                    正在生成服装方案...
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-4">
+                    <div className="flex items-center justify-between">
+                      <div className="text-[13px] font-semibold text-[var(--text-primary)]">方案列表</div>
+                      <span className="text-[10px] text-[var(--text-muted)]">
+                        共 {costumeVariants.length} 套方案
+                      </span>
+                    </div>
+                    {costumeVariants.map((variant) => (
+                      <div key={variant.id} className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-4 shadow-[var(--theme-shadow-soft)]">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="min-w-0">
+                            <div className="text-[14px] font-medium text-[var(--text-primary)]">{variant.label}</div>
+                            <p className="mt-1 text-[11px] leading-relaxed text-[var(--text-muted)]">{variant.notes}</p>
+                          </div>
+                          <button
+                            onClick={() => navigator.clipboard.writeText(variant.prompt)}
+                            className="shrink-0 rounded-lg border border-[var(--border-default)] px-3 py-1.5 text-[10px] text-[var(--text-secondary)] transition hover:border-[var(--gold-primary)] hover:text-[var(--gold-primary)] cursor-pointer"
+                          >
+                            复制提示词
+                          </button>
+                        </div>
+                        <pre className="mt-3 whitespace-pre-wrap rounded-xl border border-[var(--border-default)] bg-[var(--surface-contrast)] px-3 py-3 text-[11px] leading-relaxed text-[var(--text-secondary)]">{variant.prompt}</pre>
+                        <div className="mt-3 flex items-center justify-end gap-2">
+                          <button
+                            onClick={() => applyCostumeVariant(variant, false)}
+                            disabled={costumeApplyingId === variant.id}
+                            className="rounded-lg border border-[var(--border-default)] px-3 py-1.5 text-[11px] text-[var(--text-secondary)] transition hover:border-[var(--gold-primary)] hover:text-[var(--gold-primary)] cursor-pointer disabled:opacity-50"
+                          >
+                            {costumeApplyingId === variant.id ? "应用中..." : "写入角色提示词"}
+                          </button>
+                          <button
+                            onClick={() => applyCostumeVariant(variant, true)}
+                            disabled={costumeApplyingId === variant.id}
+                            className="rounded-lg bg-[var(--gold-primary)] px-3 py-1.5 text-[11px] font-medium text-[#0A0A0A] transition hover:brightness-110 cursor-pointer disabled:opacity-50"
+                          >
+                            {costumeApplyingId === variant.id ? "生成中..." : "写入并一键生图"}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                    {!costumeVariants.length && (
+                      <div className="rounded-2xl border border-dashed border-[var(--border-default)] px-6 py-10 text-center text-[12px] text-[var(--text-muted)]">
+                        暂无服装方案，点击左侧“重新生成方案”开始生成。
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>

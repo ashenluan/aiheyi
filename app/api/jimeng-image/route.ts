@@ -24,6 +24,45 @@ import type {
 import fs from "fs";
 import path from "path";
 
+type JimengHistoryTaskRecord = {
+  taskId?: string;
+  label?: string;
+  model?: string;
+  resolution?: string;
+  images?: string[];
+  startTime?: number;
+  endTime?: number;
+};
+
+type JimengPageBatchRecord = {
+  id?: string;
+  taskId?: string;
+  prompt?: string;
+  model?: string;
+  ratio?: string;
+  resolution?: string;
+  styleSummary?: string;
+  stylePromptSummary?: string;
+  status?: string;
+  startTime?: number;
+  results?: Array<{ url?: string }>;
+};
+
+type JimengLibraryFileMeta = {
+  sourceType?: "history" | "page";
+  taskId?: string;
+  batchId?: string;
+  label?: string;
+  model?: string;
+  resolution?: string;
+  ratio?: string;
+  prompt?: string;
+  promptPreview?: string;
+  styleSummary?: string;
+  stylePromptSummary?: string;
+  generatedAt?: number;
+};
+
 /** 获取输出目录 */
 function getOutputDir(): string {
   return getBaseOutputDir();
@@ -34,6 +73,81 @@ function getJimengImagesDir(): string {
   const dir = path.join(getOutputDir(), "jimeng-images");
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+function readJsonFile<T>(filePath: string): T | null {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    return JSON.parse(fs.readFileSync(filePath, "utf-8")) as T;
+  } catch {
+    return null;
+  }
+}
+
+function extractJimengKeyFromUrl(input?: string | null): string | null {
+  if (!input) return null;
+  try {
+    const url = new URL(input, "http://localhost");
+    if (url.pathname === "/api/jimeng-image") {
+      return url.searchParams.get("key");
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function buildHistoryMetaMap(): Map<string, JimengLibraryFileMeta> {
+  const meta = new Map<string, JimengLibraryFileMeta>();
+  const tasks = readJsonFile<JimengHistoryTaskRecord[]>(path.join(getOutputDir(), "jimeng-task-history.json"));
+  if (!Array.isArray(tasks)) return meta;
+
+  for (const task of tasks) {
+    const images = Array.isArray(task.images) ? task.images : [];
+    for (const imageUrl of images) {
+      const key = extractJimengKeyFromUrl(imageUrl);
+      if (!key) continue;
+      meta.set(key, {
+        sourceType: "history",
+        taskId: task.taskId,
+        label: task.label,
+        model: task.model,
+        resolution: task.resolution,
+        generatedAt: task.endTime || task.startTime,
+      });
+    }
+  }
+  return meta;
+}
+
+function buildPageStateMetaMap(): Map<string, JimengLibraryFileMeta> {
+  const meta = new Map<string, JimengLibraryFileMeta>();
+  const state = readJsonFile<{ batches?: JimengPageBatchRecord[] }>(path.join(getOutputDir(), "jimeng-page-state.json"));
+  const batches = Array.isArray(state?.batches) ? state?.batches : [];
+
+  for (const batch of batches) {
+    if (batch.status && batch.status !== "done") continue;
+    const results = Array.isArray(batch.results) ? batch.results : [];
+    for (const result of results) {
+      const key = extractJimengKeyFromUrl(result?.url);
+      if (!key) continue;
+      const prompt = typeof batch.prompt === "string" ? batch.prompt.trim() : "";
+      meta.set(key, {
+        sourceType: "page",
+        batchId: batch.id,
+        taskId: batch.taskId,
+        model: batch.model,
+        resolution: batch.resolution,
+        ratio: batch.ratio,
+        prompt,
+        promptPreview: prompt ? prompt.slice(0, 120) : undefined,
+        styleSummary: typeof batch.styleSummary === "string" ? batch.styleSummary : undefined,
+        stylePromptSummary: typeof batch.stylePromptSummary === "string" ? batch.stylePromptSummary : undefined,
+        generatedAt: batch.startTime,
+      });
+    }
+  }
+  return meta;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -52,15 +166,40 @@ export async function GET(req: NextRequest) {
     // 列出所有图片
     const dir = getJimengImagesDir();
     try {
+      const historyMeta = buildHistoryMetaMap();
+      const pageMeta = buildPageStateMetaMap();
       const files = fs.readdirSync(dir)
         .filter(f => /\.(png|jpg|jpeg|webp)$/i.test(f))
         .map(f => {
           const stat = fs.statSync(path.join(dir, f));
+          const key = f.replace(/\.[^.]+$/, "");
+          const page = pageMeta.get(key);
+          const history = historyMeta.get(key);
+          const merged = {
+            ...history,
+            ...page,
+          };
+          const searchText = [
+            f,
+            key,
+            merged.label,
+            merged.model,
+            merged.resolution,
+            merged.ratio,
+            merged.styleSummary,
+            merged.stylePromptSummary,
+            merged.promptPreview,
+          ]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase();
           return {
-            key: f.replace(/\.[^.]+$/, ""),
+            key,
             filename: f,
             size: stat.size,
             createdAt: stat.mtimeMs,
+            ...merged,
+            searchText,
           };
         })
         .sort((a, b) => b.createdAt - a.createdAt);

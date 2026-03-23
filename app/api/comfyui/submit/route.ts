@@ -52,7 +52,7 @@ export async function POST(request: Request) {
         ? body.extraData
         : {
             extra_pnginfo: {
-              source: "FEICAI Studio Source",
+              source: "合一漫剧 Source",
               module: "comfyui",
             },
           },

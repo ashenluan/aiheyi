@@ -23,7 +23,7 @@ export const UI_THEMES: UIThemeDefinition[] = [
   {
     id: "classic-gold",
     label: "经典鎏金",
-    description: "延续当前 FEICAI 黑金质感，适合长时间工作。",
+    description: "延续当前黑金质感，适合长时间工作。",
     accent: "#C9A962",
     preview: ["#0A0A0A", "#141414", "#C9A962"],
   },

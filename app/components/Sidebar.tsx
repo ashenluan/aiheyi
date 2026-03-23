@@ -36,6 +36,7 @@ import {
   getActiveProjectId,
   type ArchivedProject,
 } from "@/app/lib/projects";
+import { BRAND_MONOGRAM, BRAND_NAME } from "@/app/lib/brand";
 
 const navItems = [
   { icon: LayoutDashboard, label: "项目总览", href: "/" },
@@ -181,11 +182,11 @@ export default function Sidebar() {
         <div className="flex items-center gap-3 w-full">
             <div className="flex items-center justify-center w-9 h-9 border border-[var(--gold-primary)]">
               <span className="font-serif text-[18px] font-semibold text-[var(--gold-primary)]">
-                F
+                {BRAND_MONOGRAM}
               </span>
             </div>
             <span className="font-ui text-[16px] font-medium text-[var(--text-primary)] tracking-[3px]">
-              FEICAI
+              {BRAND_NAME}
             </span>
             <button
               onClick={handleManualSave}

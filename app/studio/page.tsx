@@ -780,10 +780,12 @@ function ImageModal({ src, title, onClose }: { src: string; title: string; onClo
 
 type LeftTab = "prompts" | "chars" | "scenes" | "props" | "style";
 type GridMode = "nine" | "four" | "smartNine" | "custom";
+type ExtractSourceMode = "combined" | "chapter" | "grid";
 type FourBaseFramePosition = "first" | "last";
 
 // Studio-specific localStorage key to persist UI state across navigation
 const STUDIO_STATE_KEY = "feicai-studio-state";
+const STUDIO_EXTRACT_SOURCE_KEY = "feicai-studio-extract-source-mode";
 
 interface StudioState {
   episode: string;
@@ -1062,6 +1064,7 @@ export default function StudioPage() {
   // Consistency — 缓存恢复或 localStorage 同步初始化
   const [consistency, setConsistency] = useState<ConsistencyProfile>(studioCache.consistency || defaultProfile);
   const [extracting, setExtracting] = useState(false);
+  const [extractSourceMode, setExtractSourceMode] = useState<ExtractSourceMode>("combined");
   const isLoadedRef = useRef(false);
   const [isConsistencyImagesLoaded, setIsConsistencyImagesLoaded] = useState(studioCache.isConsistencyImagesLoaded);
   const restoredRef = useRef<Partial<StudioState>>({});
@@ -1080,6 +1083,21 @@ export default function StudioPage() {
   const upscaleCellRef = useRef<(key: string, batchMode?: boolean) => Promise<void>>(async () => {}); // Latest upscaleCell ref for batch loops
   const reUpscaleCellRef = useRef<(key: string, batchMode?: boolean) => Promise<void>>(async () => {}); // Latest second-upscale ref for batch loops
   const generatingLockRef = useRef(globalGeneratingLock); // Points to module-level set — survives unmount/remount
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STUDIO_EXTRACT_SOURCE_KEY);
+      if (saved === "combined" || saved === "chapter" || saved === "grid") {
+        setExtractSourceMode(saved);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STUDIO_EXTRACT_SOURCE_KEY, extractSourceMode);
+    } catch { /* ignore */ }
+  }, [extractSourceMode]);
 
   const markConsistencySaved = useCallback((profile: ConsistencyProfile) => {
     selfConsistencySaveRef.current = true;
@@ -2740,7 +2758,7 @@ export default function StudioPage() {
       const styleDatabaseSummary = buildStyleDatabaseSummary(style);
       // ★ 不再单独输出 artStyle — stylePrompt JSON 中已包含完整风格信息，
       //   独立的 artStyle 行会与风格参考图识别出的提示词冲突/污染
-      if (styleDatabaseSummary) parts.push(`风格数据库: ${styleDatabaseSummary}`);
+      if (styleDatabaseSummary) parts.push(`风格组合: ${styleDatabaseSummary}`);
       if (style.stylePrompt) parts.push(`风格: ${style.stylePrompt}`);
       return parts.join("\n");
     }
@@ -2787,7 +2805,7 @@ export default function StudioPage() {
     const style = latestCst.style;
     const styleDatabaseSummary = buildStyleDatabaseSummary(style);
     // ★ 不再单独输出 artStyle — stylePrompt JSON 中已包含完整风格信息
-    if (styleDatabaseSummary) parts.push(`风格数据库: ${styleDatabaseSummary}`);
+    if (styleDatabaseSummary) parts.push(`风格组合: ${styleDatabaseSummary}`);
     if (style.stylePrompt) parts.push(`风格: ${style.stylePrompt}`);
     return parts.join("\n");
   }
@@ -5241,6 +5259,16 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
     [currentEpisodeEntityMatch],
   );
   const currentEpisodeEntityTotal = currentEpisodeEntityMatch ? getEpisodeEntityMatchTotal(currentEpisodeEntityMatch.result) : 0;
+  const activeExtractGridPrompts = useMemo(() => {
+    if (activeMode === "custom") return customPrompts;
+    if (activeMode === "smartNine") return smartNinePrompts;
+    if (activeMode === "four") return fourGroups[fourBeat] || [];
+    return ninePrompts;
+  }, [activeMode, customPrompts, smartNinePrompts, fourGroups, fourBeat, ninePrompts]);
+  const hasGridExtractSource = useMemo(
+    () => activeExtractGridPrompts.some((prompt) => Boolean(prompt?.trim())),
+    [activeExtractGridPrompts],
+  );
 
   // ── AI Extraction ──
 
@@ -5290,47 +5318,77 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
         script = [...scripts].reverse().find((s: { content?: string }) => s.content && s.content.length > 50);
       }
       // ★ Prioritize chapter selection from scripts page (stored in localStorage)
-      let text = "";
-      let textSource = ""; // 诊断：记录文本来源
+      let chapterText = "";
+      let chapterSource = "";
       // ★ 0) 最优先：Agent 导入的剧本上下文（FC 智能体 import_script action 存入）
       try {
         const agentScript = localStorage.getItem("feicai-agent-script-context");
         if (agentScript && agentScript.length > 50) {
-          text = agentScript;
+          chapterText = agentScript;
           const agentTitle = localStorage.getItem("feicai-agent-script-title") || "";
-          textSource = `智能体导入剧本${agentTitle ? `「${agentTitle}」` : ""}`;
+          chapterSource = `智能体导入剧本${agentTitle ? `「${agentTitle}」` : ""}`;
         }
       } catch { /* ignore */ }
       // 1) 已选章节
       try {
-        if (!text) {
+        if (!chapterText) {
           const chapterJson = localStorage.getItem("feicai-pipeline-script-chapter");
           if (chapterJson) {
             const ch = JSON.parse(chapterJson);
             if (ch?.content && ch.content.length > 50) {
-              text = ch.content;
-              textSource = `已选章节「${ch.title || "?"}」`;
+              chapterText = ch.content;
+              chapterSource = `已选章节「${ch.title || "?"}」`;
             }
           }
         }
       } catch { /* ignore */ }
       // Fall back to full script content if no chapter selected
-      if (!text && script) {
-        text = script.content || "";
-        textSource = `剧本「${(script as { title?: string }).title || script.id || "?"}」`;
+      if (!chapterText && script) {
+        chapterText = script.content || "";
+        chapterSource = `剧本「${(script as { title?: string }).title || script.id || "?"}」`;
       }
-      if (!text && !script) {
-        textSource = "无可用剧本";
+      const activeGridPromptText = activeExtractGridPrompts
+        .map((prompt) => prompt?.trim())
+        .filter(Boolean)
+        .join("\n\n---\n\n");
+      const activeGridPromptLabel =
+        activeMode === "custom"
+          ? `自定义宫格提示词（${customGridCount}格）`
+          : activeMode === "smartNine"
+            ? "智能分镜提示词"
+            : activeMode === "four"
+              ? `四宫格提示词（节拍 ${fourBeat + 1}）`
+              : "九宫格提示词";
+
+      let text = "";
+      let textSource = "";
+      if (extractSourceMode === "chapter") {
+        text = chapterText;
+        textSource = chapterSource || "无可用章节/剧本";
+      } else if (extractSourceMode === "grid") {
+        text = activeGridPromptText;
+        textSource = activeGridPromptText ? activeGridPromptLabel : "无可用宫格提示词";
+      } else {
+        text = chapterText;
+        textSource = chapterSource;
+        if (activeGridPromptText) {
+          if (text) {
+            text += `\n\n---${activeGridPromptLabel}---\n\n${activeGridPromptText}`;
+            textSource = `${chapterSource || "文本内容"} + ${activeGridPromptLabel}`;
+          } else {
+            text = activeGridPromptText;
+            textSource = activeGridPromptLabel;
+          }
+        }
       }
-      if (ninePrompts.length > 0) {
-        text += "\n\n---九宫格提示词---\n\n" + ninePrompts.join("\n\n---\n\n");
-        if (!textSource) textSource = "九宫格提示词";
+      if (!text && !textSource) {
+        textSource = "无可用内容";
       }
       // ★ 诊断日志：打印实际使用的文本来源和前 100 字
       console.log(`[AI提取] 来源: ${textSource} | 总长: ${text.length}字 | 前100字: ${text.slice(0, 100).replace(/\n/g, "↵")}`);
       if (text.length < 50) {
         console.warn(`[AI提取] 文本过短 (${text.length}字)，来源: ${textSource}，scripts数量: ${scripts.length}`);
-        toast(`没有可用的剧本内容（来源: ${textSource}，${text.length}字），请先在「剧本管理」中添加剧本`, "error");
+        toast(`没有可用的提取内容（来源: ${textSource}，${text.length}字），请先准备章节/剧本或宫格提示词`, "error");
         setExtracting(false); clearTimeout(timeoutId); clearInterval(elapsedInterval); return;
       }
       toast(`正在提取 · ${textSource} (${text.length.toLocaleString()}字)`, "info");
@@ -6883,23 +6941,64 @@ Each frame MUST look like the NEXT MOMENT of the previous frame. No scene jumps,
             </div>
 
             {/* ── Step 2: AI Extract ── */}
-            <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--border-default)]">
-              <button onClick={handleAiExtract} disabled={extracting || pipelineRunning}
-                className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-[var(--gold-primary)] text-[12px] font-medium text-[#0A0A0A] hover:brightness-110 transition cursor-pointer disabled:opacity-50">
-                {extracting ? <Loader size={12} className="animate-spin" /> : pipelineRunning ? <Lock size={12} /> : <Wand2 size={12} />}
-                {extracting ? "AI 提取中..." : pipelineRunning ? "流水线执行中…" : "② AI 一键提取"}
-              </button>
-              <button
-                onClick={async () => {
-                  const ok = await exportConsistencyToFile(consistency);
-                  toast(ok ? "已导出到 outputs/前置设定-提取数据.md" : "导出失败", ok ? "success" : "error");
-                }}
-                disabled={consistency.characters.length === 0 && consistency.scenes.length === 0 && consistency.props.length === 0}
-                title="导出角色/场景/道具数据到 outputs 文件"
-                className="flex items-center justify-center p-2 text-[var(--text-muted)] hover:text-[var(--gold-primary)] border border-[var(--border-default)] hover:border-[var(--gold-primary)] transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
-              >
-                <Download size={14} />
-              </button>
+            <div className="px-4 py-3 border-b border-[var(--border-default)]">
+              <div className="flex items-center gap-2 mb-2.5 text-[11px] text-[var(--text-muted)]">
+                <span className="shrink-0">提取来源：</span>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {([
+                    {
+                      key: "combined" as ExtractSourceMode,
+                      label: "📖+🎬 组合",
+                      title: "章节/剧本 + 当前宫格提示词一起提取",
+                      disabled: false,
+                    },
+                    {
+                      key: "chapter" as ExtractSourceMode,
+                      label: "📖 章节",
+                      title: "只从智能体导入剧本、已选章节或剧本正文提取",
+                      disabled: false,
+                    },
+                    {
+                      key: "grid" as ExtractSourceMode,
+                      label: "🎬 宫格",
+                      title: "只从当前模式下的宫格提示词提取",
+                      disabled: !hasGridExtractSource,
+                    },
+                  ]).map((option) => (
+                    <button
+                      key={option.key}
+                      onClick={() => !option.disabled && setExtractSourceMode(option.key)}
+                      disabled={option.disabled}
+                      title={option.title}
+                      className={`px-2.5 py-1 border text-[11px] transition rounded cursor-pointer ${
+                        extractSourceMode === option.key
+                          ? "bg-[var(--gold-transparent)] border-[var(--gold-primary)] text-[var(--gold-primary)]"
+                          : "border-[var(--border-default)] text-[var(--text-secondary)] hover:border-[var(--gold-primary)] hover:text-[var(--gold-primary)]"
+                      } disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:border-[var(--border-default)] disabled:hover:text-[var(--text-secondary)]`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={handleAiExtract} disabled={extracting || pipelineRunning}
+                  className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-[var(--gold-primary)] text-[12px] font-medium text-[#0A0A0A] hover:brightness-110 transition cursor-pointer disabled:opacity-50">
+                  {extracting ? <Loader size={12} className="animate-spin" /> : pipelineRunning ? <Lock size={12} /> : <Wand2 size={12} />}
+                  {extracting ? "AI 提取中..." : pipelineRunning ? "流水线执行中…" : "② AI 一键提取"}
+                </button>
+                <button
+                  onClick={async () => {
+                    const ok = await exportConsistencyToFile(consistency);
+                    toast(ok ? "已导出到 outputs/前置设定-提取数据.md" : "导出失败", ok ? "success" : "error");
+                  }}
+                  disabled={consistency.characters.length === 0 && consistency.scenes.length === 0 && consistency.props.length === 0}
+                  title="导出角色/场景/道具数据到 outputs 文件"
+                  className="flex items-center justify-center p-2 text-[var(--text-muted)] hover:text-[var(--gold-primary)] border border-[var(--border-default)] hover:border-[var(--gold-primary)] transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                  <Download size={14} />
+                </button>
+              </div>
             </div>
 
             <div className="flex border-b border-[var(--border-default)]">
@@ -7736,7 +7835,7 @@ function MotionPromptModal({ mode, episode, fourBeat, gridImages, ninePrompts, s
     if (consistency.style) {
       const st = consistency.style;
       const styleDatabaseSummary = buildStyleDatabaseSummary(st);
-      parts.push(`【视觉风格】画风：${st.artStyle || "未设定"}，色调：${st.colorPalette || "未设定"}${styleDatabaseSummary ? `，风格数据库：${styleDatabaseSummary}` : ""}${st.stylePrompt ? `，风格提示：${st.stylePrompt}` : ""}`);
+      parts.push(`【视觉风格】画风：${st.artStyle || "未设定"}，色调：${st.colorPalette || "未设定"}${styleDatabaseSummary ? `，风格组合：${styleDatabaseSummary}` : ""}${st.stylePrompt ? `，风格提示：${st.stylePrompt}` : ""}`);
     }
     return parts;
   }

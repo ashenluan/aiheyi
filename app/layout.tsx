@@ -8,6 +8,7 @@ import TaskQueuePanel from "./components/TaskQueuePanel";
 import AgentFAB from "./components/AgentFAB";
 import LicenseGuard from "./components/LicenseGuard";
 import ThemeSync from "./components/ThemeSync";
+import { BRAND_NAME } from "./lib/brand";
 
 const cormorantGaramond = Cormorant_Garamond({
   subsets: ["latin"],
@@ -31,7 +32,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "FEICAI Studio",
+  title: BRAND_NAME,
   description: "AI-powered storyboard generation studio",
 };
 

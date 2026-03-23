@@ -1979,8 +1979,8 @@ export default function PipelinePage() {
 
               <div className="flex flex-col gap-3 p-3 border border-[var(--border-default)] bg-[var(--surface-contrast)]">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-[11px] font-medium text-[var(--text-muted)] uppercase tracking-wider">风格数据库 v2</span>
-                  <span className="text-[10px] text-[var(--text-muted)]">8种整体风格 / 3种画质 / 8种镜头 / 8种光影</span>
+                  <span className="text-[11px] font-medium text-[var(--text-muted)] uppercase tracking-wider">视觉风格组合</span>
+                  <span className="text-[10px] text-[var(--text-muted)]">整体风格 / 画质档位 / 镜头效果 / 光影预设</span>
                   {styleDatabaseSummary && (
                     <span className="inline-flex items-center gap-1 px-2 py-1 text-[11px] border border-[var(--gold-primary)]/30 bg-[var(--gold-transparent)] text-[var(--gold-primary)]">
                       <span>✨</span>

@@ -57,7 +57,7 @@ export function loadProjectBundleFromDisk(projectId: string, sourceVersion: stri
     version: 1,
     exportedAt: new Date().toISOString(),
     source: {
-      app: "FEICAI Studio Source",
+      app: "合一漫剧 Source",
       version: sourceVersion,
     },
     project,

@@ -19,6 +19,7 @@ import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import { resolveProjectRoot } from "@/app/lib/runtimePaths";
+import { BRAND_NAME } from "@/app/lib/brand";
 
 export const dynamic = "force-dynamic";
 
@@ -113,7 +114,7 @@ export async function POST(req: Request) {
     if (!found) {
       return NextResponse.json({
         success: false,
-        error: "未找到 Gemini Tab 服务。请确认 GeminiTab-dist（含 server.js）或 Gemini Tab 开发目录位于飞彩工作室同级目录下。",
+        error: `未找到 Gemini Tab 服务。请确认 GeminiTab-dist（含 server.js）或 Gemini Tab 开发目录位于${BRAND_NAME}同级目录下。`,
       }, { status: 404 });
     }
 

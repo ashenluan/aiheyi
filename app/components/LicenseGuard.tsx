@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 
 import type { LicenseStatus } from "@/app/lib/license/types";
+import { BRAND_NAME } from "@/app/lib/brand";
 import DefaultLicenseScreen from "./DefaultLicenseScreen";
 import { useLicenseStatus } from "./useLicenseStatus";
 
@@ -17,7 +18,7 @@ interface LicenseGuardProps {
 
 export default function LicenseGuard({
   children,
-  title = "FEICAI STUDIO",
+  title = BRAND_NAME,
   endpoint = "/api/license",
   maxAttempts = 5,
   loadingFallback,

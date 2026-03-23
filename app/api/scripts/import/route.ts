@@ -11,6 +11,7 @@ import {
   clearPendingScripts,
   readPendingScripts,
 } from "@/app/lib/pendingScripts";
+import { BRAND_WORKSPACE_NAME } from "@/app/lib/brand";
 
 export const dynamic = "force-dynamic";
 
@@ -50,7 +51,7 @@ export async function POST(request: Request) {
     });
 
     return NextResponse.json(
-      { success: true, id: newScript.id, message: `剧本「${newScript.title}」已发送到飞彩工作台` },
+      { success: true, id: newScript.id, message: `剧本「${newScript.title}」已发送到${BRAND_WORKSPACE_NAME}` },
       { headers: corsHeaders(request) }
     );
   } catch (e) {

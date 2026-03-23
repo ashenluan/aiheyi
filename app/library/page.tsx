@@ -1068,7 +1068,7 @@ export default function LibraryPage() {
       style?.artStyle ? `整体画风：${style.artStyle}` : "",
       style?.colorPalette ? `色彩基调：${style.colorPalette}` : "",
       style?.stylePresetLabel ? `风格预设：${style.stylePresetEmoji || "✨"}${style.stylePresetLabel}` : "",
-      styleDatabaseSummary ? `风格数据库：${styleDatabaseSummary}` : "",
+      styleDatabaseSummary ? `风格组合：${styleDatabaseSummary}` : "",
       ...styleDatabaseParts,
       style?.timeSetting ? `时代/世界观：${style.timeSetting}` : "",
       style?.stylePrompt ? `风格提示：${style.stylePrompt}` : "",

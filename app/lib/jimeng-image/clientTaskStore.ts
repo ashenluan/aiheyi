@@ -1,5 +1,7 @@
 "use client";
 
+import { BRAND_NAME } from "@/app/lib/brand";
+
 // ═══════════════════════════════════════════════════════════
 // 即梦生图 · 客户端任务管理器（全局单例）
 // 负责后台轮询、结果存储、完成通知
@@ -321,7 +323,7 @@ class JimengClientTaskStore {
     // 仅页面不可见时弹浏览器通知
     if (document.hidden && "Notification" in window && Notification.permission === "granted") {
       try {
-        new Notification("飞彩工作室 · 即梦生图完成", {
+        new Notification(`${BRAND_NAME} · 即梦生图完成`, {
           body: `「${task.label}」${task.images.length} 张图片已就绪`,
           icon: "/favicon.ico",
         });

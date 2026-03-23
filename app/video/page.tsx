@@ -28,6 +28,7 @@ import { formatPromptLanguage, resolveVideoPromptProfile, type PromptLanguage } 
 import { mergeDialogues, type ImportedDialogue } from "./lib/dialogues";
 import { buildStudioToVideoChecklist } from "../lib/workflowHandoff";
 import { buildOutputEntries, persistProvenanceManifest, summarizeAssetList } from "../lib/provenance/client";
+import { BRAND_NAME } from "../lib/brand";
 import { buildStyleDatabaseSummary } from "../lib/stylePresets";
 
 /**
@@ -2636,7 +2637,7 @@ export default function VideoPage() {
           if (cst.style) {
             const st = cst.style;
             const styleDatabaseSummary = buildStyleDatabaseSummary(st);
-            contextParts.push(`【视觉风格】画风：${st.artStyle || "未设定"}，色调：${st.colorPalette || "未设定"}${styleDatabaseSummary ? `，风格数据库：${styleDatabaseSummary}` : ""}${st.stylePrompt ? `，风格提示：${st.stylePrompt}` : ""}`);
+            contextParts.push(`【视觉风格】画风：${st.artStyle || "未设定"}，色调：${st.colorPalette || "未设定"}${styleDatabaseSummary ? `，风格组合：${styleDatabaseSummary}` : ""}${st.stylePrompt ? `，风格提示：${st.stylePrompt}` : ""}`);
           }
         }
       } catch { /* ignore */ }
@@ -3130,7 +3131,7 @@ export default function VideoPage() {
         };
       });
 
-      const draftName = `飞彩-${episode.toUpperCase()}-${new Date().toLocaleDateString("zh-CN").replace(/\//g, "")}`;
+      const draftName = `${BRAND_NAME}-${episode.toUpperCase()}-${new Date().toLocaleDateString("zh-CN").replace(/\//g, "")}`;
 
       const res = await fetch("/api/jianying-draft", {
         method: "POST",

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import { getBaseOutputDir as getConfiguredBaseOutputDir } from "@/app/lib/paths";
+import { BRAND_EXPORT_NAME, BRAND_NAME } from "@/app/lib/brand";
 
 /**
  * POST /api/jianying-draft
@@ -37,7 +38,7 @@ function parseRatio(ratio: string): { w: number; h: number } {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { draftName = "飞彩工作室导出", ratio = "16:9", videos = [] } = body as {
+    const { draftName = BRAND_EXPORT_NAME, ratio = "16:9", videos = [] } = body as {
       draftName: string;
       ratio: string;
       videos: { filename: string; durationSec: number; width?: number; height?: number; label: string }[];
@@ -412,10 +413,10 @@ export async function POST(req: NextRequest) {
     // 写入导入说明
     const readmeTxt = `
 ╔═══════════════════════════════════════════════════╗
-║           飞彩工作室 → 剪映草稿导入教程             ║
+║           ${BRAND_NAME} → 剪映草稿导入教程             ║
 ╚═══════════════════════════════════════════════════╝
 
-本草稿由飞彩工作室自动生成，包含 ${segments.length} 个视频片段。
+本草稿由${BRAND_NAME}自动生成，包含 ${segments.length} 个视频片段。
 
 【导入方法（推荐）】
 1. 打开剪映专业版

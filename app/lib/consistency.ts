@@ -333,7 +333,7 @@ export function buildConsistencyContext(profile: ConsistencyProfile): string {
     }
   }
 
-  parts.push("\n【整体风格要求】");
+  parts.push("\n【视觉风格要求】");
   parts.push(`- 画幅：${profile.style.aspectRatio}`);
   parts.push(`- 分辨率：${profile.style.resolution || "4K"}`);
   const styleDatabaseParts = buildStyleDatabasePromptParts(profile.style);
@@ -982,7 +982,7 @@ export async function exportConsistencyToFile(profile: ConsistencyProfile): Prom
       if (profile.style.artStyle) lines.push(`- **画风**：${profile.style.artStyle}`);
       if (profile.style.colorPalette) lines.push(`- **色调**：${profile.style.colorPalette}`);
       const styleDatabaseSummary = buildStyleDatabaseSummary(profile.style);
-      if (styleDatabaseSummary) lines.push(`- **风格数据库 v2**：${styleDatabaseSummary}`);
+      if (styleDatabaseSummary) lines.push(`- **视觉风格组合**：${styleDatabaseSummary}`);
       if (profile.style.timeSetting) lines.push(`- **时代背景**：${profile.style.timeSetting}`);
       if (profile.style.stylePrompt) lines.push(`- **风格提示词**：${profile.style.stylePrompt}`);
       lines.push(`- **画幅**：${profile.style.aspectRatio} · ${profile.style.resolution}`);

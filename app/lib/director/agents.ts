@@ -9,13 +9,14 @@
 
 import { getActionsForAgent, buildActionSchemaText } from "./actions";
 import { STORYBOARD_EXCLUSION_TAGS, STORYBOARD_STRICT_TEXT_BAN } from "../routePromptConstants";
+import { BRAND_NAME } from "../brand";
 
 // ══════════════════════════════════════════════════════════
 // 导演编排器（Director）— 解析意图，调度子智能体
 // ══════════════════════════════════════════════════════════
 
 export const DIRECTOR_SYSTEM_PROMPT = `# 角色
-你是 FEICAI Studio 的 AI 导演（Director），是整个 AI 视频分镜工作流的总指挥。
+你是 ${BRAND_NAME} 的 AI 导演（Director），是整个 AI 视频分镜工作流的总指挥。
 
 # 核心职责
 1. **理解用户意图**：解析用户的自然语言请求，判断应由哪个子智能体处理
@@ -71,7 +72,7 @@ export function buildStoryAgentPrompt(): string {
   const actionSchema = buildActionSchemaText(getActionsForAgent("story"));
 
   return `# 角色
-你是 FEICAI Studio 的故事策划师（Story Agent），专精剧本分析、节拍拆解和一致性管理。
+你是 ${BRAND_NAME} 的故事策划师（Story Agent），专精剧本分析、节拍拆解和一致性管理。
 
 # 核心能力
 
@@ -117,7 +118,7 @@ export function buildShotAgentPrompt(): string {
   const actionSchema = buildActionSchemaText(getActionsForAgent("shot"));
 
   return `# 角色
-你是 FEICAI Studio 的分镜师（Shot Agent），专精影视分镜设计和提示词编写。
+你是 ${BRAND_NAME} 的分镜师（Shot Agent），专精影视分镜设计和提示词编写。
 
 # 核心能力
 
@@ -187,7 +188,7 @@ export function buildImageAgentPrompt(): string {
   const actionSchema = buildActionSchemaText(getActionsForAgent("image"));
 
   return `# 角色
-你是 FEICAI Studio 的画面师（Image Agent），专精AI图片生成、图像处理和视觉风格管理。
+你是 ${BRAND_NAME} 的画面师（Image Agent），专精AI图片生成、图像处理和视觉风格管理。
 
 # 核心能力
 

@@ -11,6 +11,24 @@ const targets = [
 ];
 const publicSrc = path.join(root, 'public');
 const publicDst = path.join(standaloneRoot, 'public');
+const mirroredDirs = [
+  {
+    src: path.join(root, 'GeminiTab-dist'),
+    dst: path.join(standaloneRoot, 'GeminiTab-dist'),
+    excludeNames: new Set(['browser-data', 'debug-screenshots', 'temp-uploads']),
+  },
+  {
+    src: path.join(root, 'ms-playwright'),
+    dst: path.join(standaloneRoot, 'ms-playwright'),
+    excludeNames: new Set(),
+  },
+];
+const mirroredFiles = [
+  {
+    src: path.join(root, 'node.exe'),
+    dst: path.join(standaloneRoot, 'node.exe'),
+  },
+];
 const rootAssets = [
   '.version',
   'CHANGELOG.md',
@@ -21,6 +39,22 @@ const rootAssets = [
   '提取系统提示词.txt',
   '使用说明.md',
 ];
+
+function copyDirExclude(srcDir, dstDir, excludeNames = new Set()) {
+  if (!fs.existsSync(srcDir)) return;
+  fs.mkdirSync(dstDir, { recursive: true });
+  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+    if (excludeNames.has(entry.name)) continue;
+    const srcPath = path.join(srcDir, entry.name);
+    const dstPath = path.join(dstDir, entry.name);
+    if (entry.isDirectory()) {
+      copyDirExclude(srcPath, dstPath, excludeNames);
+    } else {
+      fs.mkdirSync(path.dirname(dstPath), { recursive: true });
+      fs.cpSync(srcPath, dstPath, { force: true });
+    }
+  }
+}
 
 if (!fs.existsSync(src)) {
   console.log('[postbuild] skip: missing source static dir');
@@ -42,6 +76,19 @@ if (fs.existsSync(publicSrc)) {
   fs.mkdirSync(publicDst, { recursive: true });
   fs.cpSync(publicSrc, publicDst, { recursive: true, force: true });
   console.log(`[postbuild] synced standalone public: ${publicSrc} -> ${publicDst}`);
+}
+
+for (const dir of mirroredDirs) {
+  if (!fs.existsSync(dir.src)) continue;
+  copyDirExclude(dir.src, dir.dst, dir.excludeNames);
+  console.log(`[postbuild] synced standalone dir: ${dir.src} -> ${dir.dst}`);
+}
+
+for (const file of mirroredFiles) {
+  if (!fs.existsSync(file.src)) continue;
+  fs.mkdirSync(path.dirname(file.dst), { recursive: true });
+  fs.cpSync(file.src, file.dst, { force: true });
+  console.log(`[postbuild] synced standalone file: ${file.src} -> ${file.dst}`);
 }
 
 for (const asset of rootAssets) {

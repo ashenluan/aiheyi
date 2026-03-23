@@ -1,6 +1,7 @@
 import Link from "next/link";
 import Sidebar from "../../components/Sidebar";
 import { comfyUiExampleWorkflow } from "@/app/lib/comfyui/sampleWorkflow";
+import { BRAND_NAME } from "@/app/lib/brand";
 import { ArrowLeft, Cpu, ExternalLink, SquareTerminal, Workflow } from "lucide-react";
 
 const exampleJson = JSON.stringify(comfyUiExampleWorkflow, null, 2);
@@ -25,7 +26,7 @@ export default function ComfyUiGuidePage() {
             <span className="text-[13px] text-[var(--text-secondary)]">接入文档</span>
             <h1 className="font-serif text-[36px] text-[var(--text-primary)]">ComfyUI 接入指南</h1>
             <p className="max-w-[900px] text-[14px] leading-relaxed text-[var(--text-secondary)]">
-              这页用于说明如何把本地或远程的 ComfyUI 节点接进 FEICAI 工作流。只要能访问 ComfyUI 的 HTTP API，
+              这页用于说明如何把本地或远程的 ComfyUI 节点接进{BRAND_NAME}工作流。只要能访问 ComfyUI 的 HTTP API，
               就可以用 `/comfyui` 页面做状态检查和工作流投递。
             </p>
           </div>
@@ -45,7 +46,7 @@ export default function ComfyUiGuidePage() {
               {
                 icon: SquareTerminal,
                 title: "最常见报错",
-                text: "大多数失败都不是 FEICAI 侧的问题，而是 checkpoint 名不存在、节点缺失、工作流 JSON 结构和实际 ComfyUI 版本不匹配。",
+                text: `大多数失败都不是 ${BRAND_NAME} 侧的问题，而是 checkpoint 名不存在、节点缺失、工作流 JSON 结构和实际 ComfyUI 版本不匹配。`,
               },
             ].map((item) => {
               const Icon = item.icon;
@@ -65,7 +66,7 @@ export default function ComfyUiGuidePage() {
             <h2 className="text-[18px] font-semibold text-[var(--text-primary)]">接入步骤</h2>
             <div className="mt-4 flex flex-col gap-3 text-[14px] leading-relaxed text-[var(--text-secondary)]">
               <p>1. 启动 ComfyUI，并确保浏览器能打开类似 `http://127.0.0.1:8188` 的地址。</p>
-              <p>2. 打开 FEICAI 的 `ComfyUI` 页面，把服务地址写进去，点击“探测”。</p>
+              <p>2. 打开 {BRAND_NAME} 的 `ComfyUI` 页面，把服务地址写进去，点击“探测”。</p>
               <p>3. 状态正常后，先载入示例 workflow，再把 `ckpt_name` 改成你本地真实存在的模型名。</p>
               <p>4. 提交成功后，ComfyUI 会返回 `prompt_id`，说明任务已经进入服务端队列。</p>
               <p>5. 后续可以把分镜、角色参考图、提示词拼装后映射成 ComfyUI workflow，实现真正的自动化编排。</p>

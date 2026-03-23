@@ -83,25 +83,26 @@ export default function WorkflowHandoffChecklist({
         </div>
       </div>
 
-      <div className={`mt-3 grid ${compact ? "grid-cols-1 gap-2" : "grid-cols-1 xl:grid-cols-2 gap-2.5"}`}>
+      <div className={`mt-3 flex items-stretch gap-2 overflow-x-auto pb-1 ${compact ? "" : ""}`}>
         {checklist.items.map((item) => (
-          <div key={item.id} className={`rounded-xl border p-3 ${toneClass(item.status)}`}>
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className={`${compact ? "text-[11px]" : "text-[12px]"} font-medium text-[var(--text-primary)]`}>{item.label}</span>
-                  <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[9px] ${badgeClass(item.status)}`}>
-                    {statusLabel(item.status)}
-                  </span>
-                </div>
-                <p className={`mt-1 ${compact ? "text-[10px]" : "text-[11px]"} leading-relaxed text-[var(--text-muted)]`}>
-                  {item.detail}
-                </p>
-              </div>
+          <div
+            key={item.id}
+            className={`shrink-0 rounded-xl border ${compact ? "min-w-[220px] max-w-[260px] px-2.5 py-2" : "min-w-[240px] max-w-[300px] px-3 py-2.5"} ${toneClass(item.status)}`}
+          >
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className={`${compact ? "text-[11px]" : "text-[12px]"} font-medium text-[var(--text-primary)] shrink-0`}>
+                {item.label}
+              </span>
+              <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[9px] shrink-0 ${badgeClass(item.status)}`}>
+                {statusLabel(item.status)}
+              </span>
+              <span className={`${compact ? "text-[10px]" : "text-[11px]"} text-[var(--text-muted)] min-w-0 flex-1 truncate`}>
+                {item.detail}
+              </span>
               {item.href && item.actionLabel && (
                 <button
                   onClick={() => router.push(item.href!)}
-                  className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-[var(--border-default)] px-2.5 py-1.5 text-[10px] text-[var(--text-secondary)] transition hover:border-[var(--gold-primary)] hover:text-[var(--gold-primary)] cursor-pointer"
+                  className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-[var(--border-default)] px-2 py-1 text-[10px] text-[var(--text-secondary)] transition hover:border-[var(--gold-primary)] hover:text-[var(--gold-primary)] cursor-pointer"
                 >
                   <span>{item.actionLabel}</span>
                   <ChevronRight size={12} />

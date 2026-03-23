@@ -14,6 +14,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { readFileWithEncoding } from "../lib/fileEncoding";
+import { BRAND_ASSISTANT_NAME } from "../lib/brand";
 import {
   Bot,
   X,
@@ -447,7 +448,7 @@ export default function AgentFAB() {
   // 欢迎消息
   useEffect(() => {
     if (messages.length === 0) {
-      setMessages([{ id: genId(), role: "system", content: "✨ 飞彩 AI 助手已就绪", timestamp: Date.now() }]);
+      setMessages([{ id: genId(), role: "system", content: `✨ ${BRAND_ASSISTANT_NAME}已就绪`, timestamp: Date.now() }]);
     }
   }, [messages.length]);
 
@@ -1419,7 +1420,7 @@ export default function AgentFAB() {
           <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border-default)] bg-[#0D0D0D]">
             <div className="flex items-center gap-2.5">
               <span className="text-[16px]">🎬</span>
-              <span className="text-[14px] font-semibold text-[var(--text-primary)]">飞彩 AI 助手</span>
+              <span className="text-[14px] font-semibold text-[var(--text-primary)]">{BRAND_ASSISTANT_NAME}</span>
               {loading && <Loader size={14} className="text-[var(--gold-primary)] animate-spin" />}
             </div>
             <div className="flex items-center gap-1.5">
@@ -1629,7 +1630,7 @@ export default function AgentFAB() {
           <div className="flex items-center justify-between px-3 py-2.5 cursor-pointer" onClick={() => setMinimized(false)}>
             <div className="flex items-center gap-2">
               <span className="text-[14px]">🎬</span>
-              <span className="text-[13px] text-[var(--text-primary)]">飞彩 AI 助手</span>
+              <span className="text-[13px] text-[var(--text-primary)]">{BRAND_ASSISTANT_NAME}</span>
               {loading && <Loader size={12} className="text-[var(--gold-primary)] animate-spin" />}
             </div>
             <div className="flex items-center gap-1">
@@ -1664,7 +1665,7 @@ export default function AgentFAB() {
           bottom: fabPos.y,
           background: expanded ? "var(--gold-primary)" : "linear-gradient(135deg, #C9A962, #E5D49B)",
         }}
-        title="飞彩 AI 助手（可拖拽移动）"
+        title={`${BRAND_ASSISTANT_NAME}（可拖拽移动）`}
       >
         {expanded ? (
           <X size={24} className="text-[#0A0A0A]" />

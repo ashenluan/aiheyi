@@ -4,35 +4,225 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import Sidebar from "../components/Sidebar";
 import { useToast } from "../components/Toast";
-import { comfyUiExampleWorkflow } from "@/app/lib/comfyui/sampleWorkflow";
-import type {
-  ComfyUiConfig,
-  ComfyUiServer,
-  ComfyUiStatus,
-  ComfyUiSubmitResponse,
-} from "@/app/lib/comfyui/types";
+import type { ComfyUiConfig, ComfyUiServer } from "@/app/lib/comfyui/types";
 import {
-  ArrowRight,
+  COMFY_UI_BUILTIN_PRESETS,
+  COMFY_UI_PLATFORM_OPTIONS,
+  createDefaultOfficialComfyUiSettings,
+  detectNodeMappingsFromWorkflow,
+  parseWorkflowIdFromInput,
+  type ComfyUiOfficialSettings,
+  type ComfyUiPlatformKey,
+  type ComfyUiWorkflowNodeMapping,
+  type ComfyUiWorkflowPreset,
+} from "@/app/lib/comfyui/platformConfig";
+import {
+  BookOpen,
+  Check,
   CheckCircle2,
-  Cpu,
-  ExternalLink,
-  Globe,
+  Copy,
+  Edit3,
+  Eye,
+  EyeOff,
   Loader,
   Plus,
-  Save,
-  Send,
-  Server,
-  SquareTerminal,
+  Search,
   Trash2,
-  Workflow,
+  Upload,
+  Wifi,
+  X,
+  Zap,
 } from "lucide-react";
 
-const DEFAULT_WORKFLOW_TEXT = JSON.stringify(comfyUiExampleWorkflow, null, 2);
-const WORKFLOW_STORAGE_KEY = "feicai-comfyui-workflow";
+const SETTINGS_STORAGE_KEY = "comfyui-settings";
+
+const IMAGE_NODE_MAPPINGS: ComfyUiWorkflowNodeMapping[] = [
+  { role: "prompt", nodeId: "6", field: "text", nodeType: "CLIPTextEncode" },
+  { role: "refImage", nodeId: "3", field: "image", nodeType: "LoadImage" },
+  { role: "output", nodeId: "9", field: "images", nodeType: "SaveImage" },
+];
+
+const VIDEO_NODE_MAPPINGS: ComfyUiWorkflowNodeMapping[] = [
+  { role: "prompt", nodeId: "6", field: "text", nodeType: "CLIPTextEncode" },
+  { role: "refImage", nodeId: "3", field: "image", nodeType: "LoadImage" },
+  { role: "output", nodeId: "12", field: "video", nodeType: "SaveVideo" },
+];
+
+type ServerState = {
+  status: "online" | "offline" | "testing" | "error";
+  latencyMs?: number;
+  errorMsg?: string;
+  lastCheck?: number;
+};
+
+function cloneDefaultSettings(): ComfyUiOfficialSettings {
+  return createDefaultOfficialComfyUiSettings();
+}
+
+function mergeOfficialSettings(raw: unknown): ComfyUiOfficialSettings {
+  const base = cloneDefaultSettings();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return base;
+
+  const input = raw as Partial<ComfyUiOfficialSettings>;
+
+  return {
+    activePlatform:
+      input.activePlatform === "runninghub" ||
+      input.activePlatform === "liblib" ||
+      input.activePlatform === "thirdparty"
+        ? input.activePlatform
+        : base.activePlatform,
+    runninghub: {
+      apiKey: typeof input.runninghub?.apiKey === "string" ? input.runninghub.apiKey : base.runninghub.apiKey,
+      workflow: {
+        ...base.runninghub.workflow,
+        ...(input.runninghub?.workflow || {}),
+      },
+      nodeMappings: Array.isArray(input.runninghub?.nodeMappings)
+        ? (input.runninghub.nodeMappings as ComfyUiWorkflowNodeMapping[])
+        : base.runninghub.nodeMappings,
+    },
+    liblib: {
+      apiKey: typeof input.liblib?.apiKey === "string" ? input.liblib.apiKey : base.liblib.apiKey,
+      workflow: {
+        ...base.liblib.workflow,
+        ...(input.liblib?.workflow || {}),
+      },
+      nodeMappings: Array.isArray(input.liblib?.nodeMappings)
+        ? (input.liblib.nodeMappings as ComfyUiWorkflowNodeMapping[])
+        : base.liblib.nodeMappings,
+    },
+    thirdparty: {
+      workflow: {
+        ...base.thirdparty.workflow,
+        ...(input.thirdparty?.workflow || {}),
+      },
+      nodeMappings: Array.isArray(input.thirdparty?.nodeMappings)
+        ? (input.thirdparty.nodeMappings as ComfyUiWorkflowNodeMapping[])
+        : base.thirdparty.nodeMappings,
+    },
+    customPresets: Array.isArray(input.customPresets)
+      ? (input.customPresets as ComfyUiWorkflowPreset[])
+      : base.customPresets,
+    activePresetId: typeof input.activePresetId === "string" ? input.activePresetId : undefined,
+  };
+}
+
+function getWorkflowConfig(settings: ComfyUiOfficialSettings, platform: ComfyUiPlatformKey) {
+  return platform === "thirdparty" ? settings.thirdparty.workflow : settings[platform].workflow;
+}
+
+function getNodeMappings(settings: ComfyUiOfficialSettings, platform: ComfyUiPlatformKey) {
+  return platform === "thirdparty" ? settings.thirdparty.nodeMappings : settings[platform].nodeMappings;
+}
+
+function getApiKey(settings: ComfyUiOfficialSettings, platform: ComfyUiPlatformKey) {
+  return platform === "thirdparty" ? "" : settings[platform].apiKey;
+}
+
+function setWorkflowConfig(
+  settings: ComfyUiOfficialSettings,
+  platform: ComfyUiPlatformKey,
+  workflow: ComfyUiOfficialSettings["runninghub"]["workflow"],
+): ComfyUiOfficialSettings {
+  if (platform === "thirdparty") {
+    return {
+      ...settings,
+      thirdparty: {
+        ...settings.thirdparty,
+        workflow,
+      },
+    };
+  }
+
+  return {
+    ...settings,
+    [platform]: {
+      ...settings[platform],
+      workflow,
+    },
+  };
+}
+
+function setNodeMappingsForPlatform(
+  settings: ComfyUiOfficialSettings,
+  platform: ComfyUiPlatformKey,
+  nodeMappings: ComfyUiWorkflowNodeMapping[],
+): ComfyUiOfficialSettings {
+  if (platform === "thirdparty") {
+    return {
+      ...settings,
+      thirdparty: {
+        ...settings.thirdparty,
+        nodeMappings,
+      },
+    };
+  }
+
+  return {
+    ...settings,
+    [platform]: {
+      ...settings[platform],
+      nodeMappings,
+    },
+  };
+}
+
+function setApiKeyForPlatform(
+  settings: ComfyUiOfficialSettings,
+  platform: ComfyUiPlatformKey,
+  apiKey: string,
+): ComfyUiOfficialSettings {
+  if (platform === "thirdparty") return settings;
+  return {
+    ...settings,
+    [platform]: {
+      ...settings[platform],
+      apiKey,
+    },
+  };
+}
+
+function inferNodeMappings(preset?: ComfyUiWorkflowPreset, workflowId = "") {
+  if (preset?.nodeMappings?.length) return preset.nodeMappings;
+  const isVideo = preset?.tags?.includes("video") || /video|hunyuan|wan|sora/i.test(workflowId);
+  return isVideo ? VIDEO_NODE_MAPPINGS : IMAGE_NODE_MAPPINGS;
+}
+
+function normalizeImportedPreset(input: unknown): ComfyUiWorkflowPreset[] {
+  const items = Array.isArray(input) ? input : [input];
+  return items.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`第 ${index + 1} 个预设格式无效`);
+    }
+
+    const preset = item as Partial<ComfyUiWorkflowPreset>;
+    if (!preset.name || typeof preset.name !== "string") {
+      throw new Error(`第 ${index + 1} 个预设缺少 name`);
+    }
+
+    const platform =
+      preset.platform === "liblib" || preset.platform === "thirdparty" ? preset.platform : "runninghub";
+    const nodeMappings = Array.isArray(preset.nodeMappings)
+      ? (preset.nodeMappings as ComfyUiWorkflowNodeMapping[])
+      : inferNodeMappings(undefined, preset.workflowId || "");
+
+    return {
+      id: typeof preset.id === "string" && preset.id.trim() ? preset.id : `custom_${Date.now()}_${index}`,
+      name: preset.name.trim(),
+      description: typeof preset.description === "string" ? preset.description : "",
+      tags: Array.isArray(preset.tags) ? preset.tags.map(String) : ["自定义"],
+      runs: typeof preset.runs === "string" ? preset.runs : "0",
+      platform,
+      workflowId: typeof preset.workflowId === "string" ? preset.workflowId : "",
+      nodeMappings,
+    };
+  });
+}
 
 function createServerDraft(index: number): ComfyUiServer {
   return {
-    id: `comfy-local-${Date.now()}-${index}`,
+    id: `srv_${Date.now()}_${index}`,
     name: `ComfyUI ${index + 1}`,
     url: "http://127.0.0.1:8188",
     note: "",
@@ -42,58 +232,64 @@ function createServerDraft(index: number): ComfyUiServer {
 
 export default function ComfyUiPage() {
   const { toast } = useToast();
+  const [settings, setSettings] = useState<ComfyUiOfficialSettings>(() => cloneDefaultSettings());
   const [servers, setServers] = useState<ComfyUiServer[]>([]);
   const [activeServerId, setActiveServerId] = useState<string | null>(null);
+  const [serverStates, setServerStates] = useState<Record<string, ServerState>>({});
   const [configFile, setConfigFile] = useState("");
-  const [statuses, setStatuses] = useState<Record<string, ComfyUiStatus>>({});
-  const [workflowText, setWorkflowText] = useState(DEFAULT_WORKFLOW_TEXT);
-  const [submitResult, setSubmitResult] = useState<ComfyUiSubmitResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [ready, setReady] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [checkingId, setCheckingId] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [checkingServerId, setCheckingServerId] = useState<string | null>(null);
+  const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number } | null>(null);
+  const [addingServer, setAddingServer] = useState(false);
+  const [newServerName, setNewServerName] = useState("");
+  const [newServerAddress, setNewServerAddress] = useState("");
+  const [deleteServerId, setDeleteServerId] = useState<string | null>(null);
+  const [editingPreset, setEditingPreset] = useState<ComfyUiWorkflowPreset | null>(null);
+  const [deletePresetId, setDeletePresetId] = useState<string | null>(null);
+  const [detectingMappings, setDetectingMappings] = useState(false);
 
-  const activeServer = useMemo(
-    () => servers.find((server) => server.id === activeServerId) ?? servers[0] ?? null,
-    [servers, activeServerId]
-  );
-
-  const onlineCount = useMemo(
-    () => Object.values(statuses).filter((status) => status.online).length,
-    [statuses]
-  );
+  const activePlatform = settings.activePlatform;
+  const isThirdParty = activePlatform === "thirdparty";
+  const currentWorkflow = getWorkflowConfig(settings, activePlatform);
+  const currentNodeMappings = getNodeMappings(settings, activePlatform);
+  const currentApiKey = getApiKey(settings, activePlatform);
+  const presets = useMemo(() => [...COMFY_UI_BUILTIN_PRESETS, ...settings.customPresets], [settings.customPresets]);
+  const onlineCount = useMemo(() => Object.values(serverStates).filter((state) => state.status === "online").length, [serverStates]);
 
   useEffect(() => {
-    const cachedWorkflow = localStorage.getItem(WORKFLOW_STORAGE_KEY);
-    if (cachedWorkflow) setWorkflowText(cachedWorkflow);
+    (async () => {
+      try {
+        const stored = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+        if (stored) setSettings(mergeOfficialSettings(JSON.parse(stored)));
+      } catch {
+        // ignore invalid local settings
+      }
+
+      try {
+        const response = await fetch("/api/comfyui/servers", { cache: "no-store" });
+        const data = (await response.json()) as ComfyUiConfig & { configFile?: string };
+        if (response.ok) {
+          setServers(data.servers || []);
+          setActiveServerId(data.activeServerId ?? data.servers?.[0]?.id ?? null);
+          setConfigFile(data.configFile || "");
+        } else {
+          setServers([createServerDraft(0)]);
+        }
+      } catch {
+        setServers([createServerDraft(0)]);
+      } finally {
+        setReady(true);
+      }
+    })();
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(WORKFLOW_STORAGE_KEY, workflowText);
-  }, [workflowText]);
-
-  async function loadConfig() {
-    setLoading(true);
-    try {
-      const response = await fetch("/api/comfyui/servers", { cache: "no-store" });
-      const data = await response.json();
-      const config = data as ComfyUiConfig & { configFile?: string };
-      setServers(config.servers || []);
-      setActiveServerId(config.activeServerId ?? config.servers?.[0]?.id ?? null);
-      setConfigFile(config.configFile || "");
-      setStatuses({});
-    } catch {
-      toast("读取 ComfyUI 配置失败", "error");
-      setServers([createServerDraft(0)]);
-      setActiveServerId(null);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    loadConfig();
-  }, []);
+    if (!ready) return;
+    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  }, [ready, settings]);
 
   async function saveConfig() {
     setSaving(true);
@@ -101,14 +297,12 @@ export default function ComfyUiPage() {
       const response = await fetch("/api/comfyui/servers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ servers, activeServerId }),
+        body: JSON.stringify({ servers, activeServerId: activeServerId ?? servers[0]?.id ?? null }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "保存失败");
-      setServers(data.servers || []);
-      setActiveServerId(data.activeServerId ?? data.servers?.[0]?.id ?? null);
       setConfigFile(data.configFile || "");
-      toast("ComfyUI 服务器配置已保存", "success");
+      toast("配置已保存", "success");
     } catch (error) {
       toast(error instanceof Error ? error.message : "保存失败", "error");
     } finally {
@@ -116,445 +310,916 @@ export default function ComfyUiPage() {
     }
   }
 
-  function updateServer(serverId: string, patch: Partial<ComfyUiServer>) {
-    setServers((current) =>
-      current.map((server) => (server.id === serverId ? { ...server, ...patch } : server))
-    );
-  }
+  async function testPlatformConnection() {
+    if (isThirdParty) {
+      await checkAllServers();
+      return;
+    }
 
-  function addServer() {
-    setServers((current) => {
-      const next = [...current, createServerDraft(current.length)];
-      if (!activeServerId) setActiveServerId(next[0].id);
-      return next;
-    });
-  }
+    if (!currentApiKey.trim()) {
+      toast("请先填写 API Key", "error");
+      return;
+    }
 
-  function removeServer(serverId: string) {
-    setServers((current) => {
-      if (current.length === 1) {
-        toast("至少保留一个 ComfyUI 服务器", "info");
-        return current;
-      }
-      const next = current.filter((server) => server.id !== serverId);
-      if (activeServerId === serverId) {
-        setActiveServerId(next[0]?.id ?? null);
-      }
-      setStatuses((statusMap) => {
-        const cloned = { ...statusMap };
-        delete cloned[serverId];
-        return cloned;
+    setTestingConnection(true);
+    try {
+      const response = await fetch("/api/comfyui/servers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "test", platform: activePlatform, apiKey: currentApiKey }),
       });
-      return next;
-    });
+      const data = await response.json();
+      if (!response.ok || data.online === false) throw new Error(data.message || "连接失败");
+      toast(data.message || "连接成功", "success");
+      if (currentWorkflow.workflowId.trim()) {
+        setSettings((current) =>
+          setWorkflowConfig(current, activePlatform, {
+            ...getWorkflowConfig(current, activePlatform),
+            verified: true,
+          }),
+        );
+      }
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "连接失败", "error");
+    } finally {
+      setTestingConnection(false);
+    }
   }
 
   async function checkServer(server: ComfyUiServer) {
-    setCheckingId(server.id);
+    setCheckingServerId(server.id);
+    setServerStates((current) => ({ ...current, [server.id]: { ...current[server.id], status: "testing" } }));
     try {
-      const response = await fetch("/api/comfyui/status", {
+      const response = await fetch("/api/comfyui/servers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          serverId: server.id,
-          url: server.url,
-          name: server.name,
-        }),
+        body: JSON.stringify({ action: "test", platform: "thirdparty", serverId: server.id, address: server.url, name: server.name }),
       });
-      const data = (await response.json()) as ComfyUiStatus & { error?: string };
-      setStatuses((current) => ({ ...current, [server.id]: data }));
-      if (response.ok) {
-        toast(`${server.name} 在线，可继续提交工作流`, "success");
-      } else {
-        toast(data.error || `${server.name} 当前不可用`, "error");
-      }
-    } catch {
-      toast(`无法连接 ${server.name}`, "error");
-    } finally {
-      setCheckingId(null);
-    }
-  }
-
-  async function checkAllServers() {
-    for (const server of servers) {
-      // eslint-disable-next-line no-await-in-loop
-      await checkServer(server);
-    }
-  }
-
-  async function submitWorkflow() {
-    if (!activeServer) {
-      toast("请先配置 ComfyUI 服务器", "error");
-      return;
-    }
-
-    try {
-      JSON.parse(workflowText);
-    } catch {
-      toast("工作流 JSON 格式不合法，请先修正", "error");
-      return;
-    }
-
-    setSubmitting(true);
-    setSubmitResult(null);
-    try {
-      const response = await fetch("/api/comfyui/submit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          serverId: activeServer.id,
-          url: activeServer.url,
-          name: activeServer.name,
-          workflow: workflowText,
-        }),
-      });
-      const data = (await response.json()) as ComfyUiSubmitResponse;
-      setSubmitResult(data);
-      if (!response.ok || !data.success) {
-        throw new Error(data.error || "工作流提交失败");
-      }
-      toast(`工作流已提交到 ${activeServer.name}`, "success");
-      await checkServer(activeServer);
+      const data = await response.json();
+      setServerStates((current) => ({
+        ...current,
+        [server.id]: {
+          status: response.ok && data.online ? "online" : "offline",
+          latencyMs: data.latencyMs,
+          errorMsg: response.ok ? undefined : data.message,
+          lastCheck: Date.now(),
+        },
+      }));
+      if (!response.ok || data.online === false) throw new Error(data.message || "离线");
+      toast(`${server.name}: 连接成功${data.latencyMs ? ` (${data.latencyMs}ms)` : ""}`, "success");
     } catch (error) {
-      const message = error instanceof Error ? error.message : "工作流提交失败";
-      toast(message, "error");
+      setServerStates((current) => ({
+        ...current,
+        [server.id]: {
+          status: "error",
+          errorMsg: error instanceof Error ? error.message : "连接失败",
+          lastCheck: Date.now(),
+        },
+      }));
+      toast(`${server.name}: ${error instanceof Error ? error.message : "连接失败"}`, "error");
     } finally {
-      setSubmitting(false);
+      setCheckingServerId(null);
     }
+  }
+  async function checkAllServers() {
+    if (servers.length === 0) {
+      toast("暂无服务器", "error");
+      return;
+    }
+    for (let index = 0; index < servers.length; index += 1) {
+      setBulkProgress({ current: index + 1, total: servers.length });
+      await checkServer(servers[index]);
+    }
+    setBulkProgress(null);
+    toast(`批量测试完成 (${servers.length} 台)`, "success");
+  }
+
+  function addServer() {
+    if (!newServerName.trim() || !newServerAddress.trim()) {
+      toast("请填写名称和服务器地址", "error");
+      return;
+    }
+    try {
+      new URL(newServerAddress.trim());
+    } catch {
+      toast("服务器地址格式无效，需包含协议", "error");
+      return;
+    }
+
+    const server: ComfyUiServer = {
+      id: `srv_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      name: newServerName.trim(),
+      url: newServerAddress.trim(),
+      note: "",
+      enabled: true,
+    };
+
+    setServers((current) => [...current, server]);
+    setActiveServerId((current) => current ?? server.id);
+    setAddingServer(false);
+    setNewServerName("");
+    setNewServerAddress("");
+    toast(`已添加: ${server.name}`, "success");
+  }
+
+  function removeServer(serverId: string) {
+    if (servers.length <= 1) {
+      toast("至少保留一个服务器", "info");
+      return;
+    }
+    const remaining = servers.filter((server) => server.id !== serverId);
+    setServers(remaining);
+    if (activeServerId === serverId) setActiveServerId(remaining[0]?.id ?? null);
+    setDeleteServerId(null);
+    toast("服务器已删除", "success");
+  }
+
+  function applyWorkflowIdInput(value: string) {
+    setSettings((current) =>
+      setWorkflowConfig(current, activePlatform, {
+        ...getWorkflowConfig(current, activePlatform),
+        workflowId: value,
+        verified: false,
+      }),
+    );
+  }
+
+  function parseWorkflowUrl() {
+    if (isThirdParty) return;
+    if (!currentWorkflow.workflowId.trim()) {
+      toast("请先输入工作流 URL 或 ID", "error");
+      return;
+    }
+    const parsed = parseWorkflowIdFromInput(currentWorkflow.workflowId);
+    applyWorkflowIdInput(parsed);
+    toast(parsed !== currentWorkflow.workflowId ? `已解析 ID: ${parsed}` : "未检测到 URL 格式，已保留原始内容", "success");
+  }
+
+  function autoDetectMappings() {
+    if (!currentWorkflow.workflowId.trim()) {
+      toast("请先填写工作流 ID", "error");
+      return;
+    }
+    setDetectingMappings(true);
+    window.setTimeout(() => {
+      const activePreset = presets.find((item) => item.id === settings.activePresetId);
+      const mappings = inferNodeMappings(activePreset, currentWorkflow.workflowId);
+      setSettings((current) => setNodeMappingsForPlatform(current, activePlatform, mappings));
+      setDetectingMappings(false);
+      toast("已自动检测并填充节点映射 (通用模板)", "success");
+    }, 800);
+  }
+
+  function applyPreset(preset: ComfyUiWorkflowPreset) {
+    setSettings((current) => {
+      const nextWithPlatform = { ...current, activePlatform: preset.platform, activePresetId: preset.id };
+      const nextWithWorkflow = setWorkflowConfig(nextWithPlatform, preset.platform, {
+        ...getWorkflowConfig(nextWithPlatform, preset.platform),
+        workflowId: preset.workflowId,
+        workflowName: preset.name,
+        verified: false,
+        nodeCount: undefined,
+        inputCount: undefined,
+      });
+      return setNodeMappingsForPlatform(nextWithWorkflow, preset.platform, preset.nodeMappings);
+    });
+    toast(`已应用预设: ${preset.name}`, "success");
+  }
+
+  function exportPreset(preset: ComfyUiWorkflowPreset) {
+    const blob = new Blob([
+      JSON.stringify(
+        {
+          name: preset.name,
+          description: preset.description,
+          tags: preset.tags,
+          platform: preset.platform,
+          workflowId: preset.workflowId,
+          nodeMappings: preset.nodeMappings,
+        },
+        null,
+        2,
+      ),
+    ], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `comfyui-preset-${preset.name.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, "_")}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    toast(`已导出: ${preset.name}`, "success");
+  }
+
+  function clonePreset(preset: ComfyUiWorkflowPreset) {
+    const cloned: ComfyUiWorkflowPreset = {
+      ...preset,
+      id: `custom_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      name: `${preset.name} (副本)`,
+      runs: "0",
+    };
+    setSettings((current) => ({ ...current, customPresets: [...current.customPresets, cloned] }));
+    setEditingPreset(cloned);
+    toast("已创建副本，可自由编辑", "success");
+  }
+
+  async function importPresetFile(file: File) {
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const imported = normalizeImportedPreset(parsed);
+      setSettings((current) => ({ ...current, customPresets: [...current.customPresets, ...imported] }));
+      toast(`已导入 ${imported.length} 个工作流预设`, "success");
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "导入失败：JSON 格式无效", "error");
+    }
+  }
+
+  async function importWorkflowFile(file: File) {
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const detectedMappings = detectNodeMappingsFromWorkflow(parsed);
+      const nodeCount =
+        parsed && typeof parsed === "object" && !Array.isArray(parsed) ? Object.keys(parsed as Record<string, unknown>).length : undefined;
+      const nextMappings = detectedMappings.length > 0 ? detectedMappings : inferNodeMappings(undefined, file.name);
+      const workflowLabel =
+        parsed && typeof parsed === "object" && !Array.isArray(parsed) && typeof (parsed as Record<string, unknown>).name === "string"
+          ? String((parsed as Record<string, unknown>).name)
+          : file.name.replace(/\.json$/i, "");
+      setSettings((current) => {
+        const next = setWorkflowConfig(current, activePlatform, {
+          ...getWorkflowConfig(current, activePlatform),
+          workflowId: workflowLabel,
+          workflowName: workflowLabel,
+          verified: true,
+          nodeCount,
+          inputCount: nextMappings.length,
+        });
+        return setNodeMappingsForPlatform(next, activePlatform, nextMappings);
+      });
+      toast(`已导入工作流：${file.name}`, "success");
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "工作流 JSON 无效", "error");
+    }
+  }
+
+  function saveEditedPreset(preset: ComfyUiWorkflowPreset) {
+    setSettings((current) => ({
+      ...current,
+      customPresets: current.customPresets.map((item) => (item.id === preset.id ? preset : item)),
+    }));
+    setEditingPreset(null);
+    toast(`工作流“${preset.name}”已保存`, "success");
+  }
+
+  function removePreset(presetId: string) {
+    setSettings((current) => ({
+      ...current,
+      customPresets: current.customPresets.filter((item) => item.id !== presetId),
+      activePresetId: current.activePresetId === presetId ? undefined : current.activePresetId,
+    }));
+    setDeletePresetId(null);
+    setEditingPreset((current) => (current?.id === presetId ? null : current));
+    toast("预设已删除", "success");
+  }
+
+  function updateMapping(role: ComfyUiWorkflowNodeMapping["role"], patch: Partial<ComfyUiWorkflowNodeMapping>) {
+    setSettings((current) => {
+      const currentMappings = getNodeMappings(current, activePlatform);
+      const existing = currentMappings.find((item) => item.role === role) ?? { role, nodeId: "", field: "", nodeType: "" };
+      const nextEntry = { ...existing, ...patch };
+      const nextMappings = [
+        ...currentMappings.filter((item) => item.role !== role),
+        nextEntry,
+      ].sort((a, b) => {
+        const order = { prompt: 0, refImage: 1, output: 2 };
+        return order[a.role] - order[b.role];
+      });
+      return setNodeMappingsForPlatform(current, activePlatform, nextMappings);
+    });
+  }
+
+  function saveCurrentAsPreset() {
+    if (!currentWorkflow.workflowId.trim()) {
+      toast("请先填写并确认当前工作流", "error");
+      return;
+    }
+
+    const preset: ComfyUiWorkflowPreset = {
+      id: `custom_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      name: currentWorkflow.workflowName || `${COMFY_UI_PLATFORM_OPTIONS.find((item) => item.key === activePlatform)?.label || "ComfyUI"} 工作流`,
+      description: "从当前平台配置保存的工作流预设",
+      tags: [activePlatform === "thirdparty" ? "第三方算力" : activePlatform === "liblib" ? "LiblibAI" : "RunningHub", "自定义"],
+      runs: "0",
+      platform: activePlatform,
+      workflowId: currentWorkflow.workflowId,
+      nodeMappings: currentNodeMappings,
+    };
+
+    setSettings((current) => ({
+      ...current,
+      customPresets: [...current.customPresets, preset],
+      activePresetId: preset.id,
+    }));
+    setEditingPreset(preset);
+    toast("已保存为自定义工作流", "success");
+  }
+
+  if (!ready) {
+    return (
+      <div className="flex h-screen bg-[#0A0A0A]">
+        <Sidebar />
+        <main className="flex flex-1 items-center justify-center">
+          <Loader className="h-6 w-6 animate-spin text-[var(--gold-primary)]" />
+        </main>
+      </div>
+    );
   }
 
   return (
-    <div className="flex h-full w-full">
+    <div className="flex h-screen bg-[#0A0A0A]">
       <Sidebar />
-      <main className="flex-1 flex flex-col gap-8 p-8 px-10 overflow-auto">
-        <div className="flex items-start justify-between gap-6">
-          <div className="flex flex-col gap-2">
-            <span className="text-[13px] font-normal text-[var(--text-secondary)]">节点工作流接入</span>
-            <h1 className="font-serif text-[40px] font-medium text-[var(--text-primary)]">ComfyUI 工作流</h1>
-            <p className="max-w-[820px] text-[14px] leading-relaxed text-[var(--text-secondary)]">
-              这里用于管理多个 ComfyUI 服务、探测在线状态，并把自定义 workflow JSON 直接投递到 `/prompt` 队列里。
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            <Link
-              href="/comfyui/guide"
-              className="flex items-center gap-2 px-4 py-2 border border-[var(--border-default)] text-[13px] text-[var(--text-secondary)] hover:border-[var(--gold-primary)] hover:text-[var(--gold-primary)] transition"
-            >
-              <SquareTerminal size={14} />
-              接入指南
-            </Link>
-            <Link
-              href="/settings"
-              className="flex items-center gap-2 px-4 py-2 bg-[var(--gold-primary)] text-[13px] font-medium text-[#0A0A0A] hover:brightness-110 transition"
-            >
-              打开设置
-              <ArrowRight size={14} />
-            </Link>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-3 gap-5">
-          {[
-            {
-              label: "已配置服务器",
-              value: String(servers.length || 0),
-              icon: Server,
-              detail: activeServer ? `当前激活: ${activeServer.name}` : "未选择激活服务器",
-            },
-            {
-              label: "在线服务器",
-              value: String(onlineCount),
-              icon: CheckCircle2,
-              detail: onlineCount > 0 ? "可直接提交工作流" : "建议先做状态探测",
-            },
-            {
-              label: "配置文件",
-              value: configFile ? "已落盘" : "未落盘",
-              icon: Cpu,
-              detail: configFile || "将保存到程序根目录",
-            },
-          ].map((item) => {
-            const Icon = item.icon;
-            return (
-              <div key={item.label} className="flex flex-col gap-4 border border-[var(--border-default)] p-6">
-                <span className="text-[13px] text-[var(--text-secondary)]">{item.label}</span>
-                <span className="font-serif text-[36px] text-[var(--text-primary)]">{item.value}</span>
-                <div className="flex items-center gap-2">
-                  <Icon size={14} className="text-[var(--gold-primary)]" />
-                  <span className="text-[12px] text-[var(--text-secondary)] truncate">{item.detail}</span>
-                </div>
+      <main className="flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-[1160px] px-8 py-8">
+          <div className="mb-6 flex items-center justify-between gap-6">
+            <div className="flex items-center gap-4">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--gold-primary)]/10">
+                <Zap className="h-5 w-5 text-[var(--gold-primary)]" />
               </div>
-            );
-          })}
-        </div>
-
-        <div className="grid grid-cols-[1.05fr_1.2fr] gap-6 items-start">
-          <section className="flex flex-col gap-4 border border-[var(--border-default)] p-6">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <Globe size={18} className="text-[var(--gold-primary)]" />
-                <div>
-                  <h2 className="text-[18px] font-semibold text-[var(--text-primary)]">ComfyUI 节点服务器</h2>
-                  <p className="text-[12px] text-[var(--text-secondary)]">支持多服务切换，默认推荐接本机 `127.0.0.1:8188`。</p>
+              <div>
+                <div className="flex items-center gap-3">
+                  <h1 className="font-serif text-xl font-semibold text-[var(--text-primary)]">ComfyUI 工作流</h1>
+                  <span className="rounded bg-[var(--gold-primary)]/15 px-2 py-0.5 text-[11px] font-semibold text-[var(--gold-primary)]">NEW</span>
                 </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={checkAllServers}
-                  disabled={loading || checkingId !== null}
-                  className="flex items-center gap-1.5 px-3.5 py-2 border border-[var(--border-default)] text-[12px] text-[var(--text-secondary)] hover:border-[var(--gold-primary)] hover:text-[var(--gold-primary)] transition cursor-pointer disabled:opacity-40"
-                >
-                  {checkingId ? <Loader size={12} className="animate-spin" /> : <ExternalLink size={12} />}
-                  全部探测
-                </button>
-                <button
-                  onClick={saveConfig}
-                  disabled={loading || saving}
-                  className="flex items-center gap-1.5 px-3.5 py-2 bg-[var(--gold-primary)] text-[12px] font-medium text-[#0A0A0A] hover:brightness-110 transition cursor-pointer disabled:opacity-40"
-                >
-                  {saving ? <Loader size={12} className="animate-spin" /> : <Save size={12} />}
-                  保存配置
-                </button>
+                <p className="mt-0.5 text-[13px] text-[var(--text-secondary)]">接驳 RunningHub / LiblibAI / 第三方算力，多服务器并行生成</p>
               </div>
             </div>
 
-            {loading ? (
-              <div className="flex items-center justify-center py-12">
-                <Loader size={20} className="animate-spin text-[var(--gold-primary)]" />
+            <div className="flex items-center gap-3">
+              <Link href="/comfyui/guide" className="flex items-center gap-2 border border-[var(--border-default)] px-4 py-2 text-sm text-[var(--text-secondary)] transition hover:border-[var(--gold-primary)]/30 hover:text-[var(--gold-primary)]">
+                <BookOpen className="h-3.5 w-3.5" />
+                操作指南
+              </Link>
+
+              <button type="button" onClick={testPlatformConnection} disabled={testingConnection || checkingServerId !== null} className="flex cursor-pointer items-center gap-2 border border-[var(--gold-primary)] px-4 py-2 text-sm text-[var(--gold-primary)] transition hover:bg-[var(--gold-primary)]/10 disabled:opacity-50">
+                {testingConnection ? <Loader className="h-3.5 w-3.5 animate-spin" /> : <Wifi className="h-3.5 w-3.5" />}
+                测试连接
+              </button>
+
+              <button type="button" onClick={saveConfig} disabled={saving} className="flex cursor-pointer items-center gap-2 bg-[var(--gold-primary)] px-4 py-2 text-sm font-semibold text-[#0A0A0A] transition hover:brightness-110 disabled:opacity-50">
+                {saving ? <Loader className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                保存配置
+              </button>
+            </div>
+          </div>
+
+          <div className="h-px bg-[var(--border-default)]" />
+
+          <div className="flex border-b border-[var(--border-default)]">
+            {COMFY_UI_PLATFORM_OPTIONS.map((option) => (
+              <button key={option.key} type="button" onClick={() => setSettings((current) => ({ ...current, activePlatform: option.key }))} className={`relative cursor-pointer px-6 py-3 text-sm transition-colors ${activePlatform === option.key ? "font-semibold text-[var(--gold-primary)]" : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"}`}>
+                {option.label}
+                {activePlatform === option.key ? <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[var(--gold-primary)]" /> : null}
+              </button>
+            ))}
+          </div>
+
+          {!isThirdParty ? (
+            <div className="mt-6">
+              <div className="mb-2 flex items-center gap-2">
+                <label className="text-[13px] font-semibold text-[var(--text-primary)]">API Key</label>
+                <span className="text-xs text-[var(--text-muted)]">({activePlatform === "runninghub" ? "RunningHub" : "LiblibAI"} 平台密钥)</span>
               </div>
-            ) : (
-              <div className="flex flex-col gap-4">
-                {servers.map((server) => {
-                  const status = statuses[server.id];
-                  const isActive = activeServerId === server.id;
-                  const isChecking = checkingId === server.id;
+              <div className="relative">
+                <input type={showApiKey ? "text" : "password"} value={currentApiKey} onChange={(event) => setSettings((current) => setApiKeyForPlatform(current, activePlatform, event.target.value))} placeholder="sk-xxxx-xxxx-xxxx-xxxxxxxxxxxx" className="h-11 w-full border border-[var(--border-default)] bg-[var(--bg-panel)] px-4 pr-10 text-sm text-[var(--text-primary)] outline-none transition placeholder:text-[var(--text-muted)] focus:border-[var(--gold-primary)]/50" />
+                <button type="button" onClick={() => setShowApiKey((current) => !current)} className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)] transition hover:text-[var(--text-primary)]">
+                  {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="mt-6 border border-[var(--gold-primary)]/20 bg-[var(--gold-primary)]/5 px-4 py-3 text-[13px] text-[var(--text-secondary)]">💡 第三方算力模式直连 ComfyUI 服务器，无需 API Key。请在下方添加服务器连接。</div>
+          )}
+
+          {isThirdParty ? (
+            <>
+              <div className="my-6 h-px bg-[var(--border-default)]" />
+              <div className="mb-1 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <h2 className="text-base font-semibold text-[var(--text-primary)]">服务器管理</h2>
+                  <span className="text-xs text-green-400">当前并发：{onlineCount} 台服务器在线</span>
+                </div>
+                <button type="button" onClick={checkAllServers} disabled={bulkProgress !== null} className="flex cursor-pointer items-center gap-1.5 border border-[var(--border-default)] px-3 py-1 text-xs text-[var(--text-secondary)] transition hover:border-[var(--gold-primary)] hover:text-[var(--text-primary)] disabled:opacity-50">
+                  {bulkProgress ? <Loader className="h-3 w-3 animate-spin" /> : <Wifi className="h-3 w-3" />}
+                  {bulkProgress ? `${bulkProgress.current}/${bulkProgress.total}` : "全部测试"}
+                </button>
+              </div>
+              <p className="mb-4 text-xs text-[var(--text-muted)]">每台服务器支持 1 路并发，添加更多服务器以提升并行生成能力</p>
+
+              <div className="grid grid-cols-[1fr_2fr_80px_120px] gap-4 bg-[var(--bg-panel)] px-4 py-2 text-xs font-semibold text-[var(--text-secondary)]">
+                <span>名称</span>
+                <span>服务器地址</span>
+                <span>状态 / 延迟</span>
+                <span>操作</span>
+              </div>
+
+              {servers.length === 0 ? (
+                <div className="border border-[var(--border-default)] py-12 text-center text-sm text-[var(--text-muted)]">
+                  <p>暂无服务器</p>
+                  <p className="mt-1 text-xs">点击下方按钮添加你的第一台 ComfyUI 服务器</p>
+                </div>
+              ) : (
+                servers.map((server) => {
+                  const state = serverStates[server.id];
+                  const statusLabel = state?.status === "online" ? "在线" : state?.status === "testing" ? "测试中" : state?.status === "error" ? "错误" : "离线";
+                  const statusClass = state?.status === "online" ? "text-green-400" : state?.status === "testing" ? "text-yellow-400" : "text-red-400";
                   return (
-                    <div
-                      key={server.id}
-                      className={`flex flex-col gap-4 border p-4 transition ${
-                        isActive ? "border-[var(--gold-primary)] bg-[#C9A96208]" : "border-[var(--border-default)]"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <label className="flex items-center gap-2 text-[13px] text-[var(--text-primary)] cursor-pointer">
-                          <input
-                            type="radio"
-                            name="active-comfy-server"
-                            checked={isActive}
-                            onChange={() => setActiveServerId(server.id)}
-                            className="accent-[var(--gold-primary)]"
-                          />
-                          设为激活节点
-                        </label>
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => checkServer(server)}
-                            disabled={isChecking}
-                            className="flex items-center gap-1.5 px-2.5 py-1.5 border border-[var(--border-default)] text-[11px] text-[var(--text-secondary)] hover:border-[var(--gold-primary)] hover:text-[var(--gold-primary)] transition cursor-pointer disabled:opacity-40"
-                          >
-                            {isChecking ? <Loader size={11} className="animate-spin" /> : <ExternalLink size={11} />}
-                            探测
-                          </button>
-                          <button
-                            onClick={() => removeServer(server.id)}
-                            className="flex items-center gap-1.5 px-2.5 py-1.5 border border-red-500/30 text-[11px] text-red-400 hover:bg-red-500/10 transition cursor-pointer"
-                          >
-                            <Trash2 size={11} />
-                            删除
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="flex flex-col gap-1.5">
-                          <label className="text-[11px] text-[var(--text-muted)]">显示名称</label>
-                          <input
-                            value={server.name}
-                            onChange={(event) => updateServer(server.id, { name: event.target.value })}
-                            className="px-3 py-2.5 bg-[var(--bg-surface)] border border-[var(--border-default)] text-[13px] text-[var(--text-primary)] outline-none focus:border-[var(--gold-primary)] transition"
-                          />
-                        </div>
-                        <div className="flex flex-col gap-1.5">
-                          <label className="text-[11px] text-[var(--text-muted)]">状态备注</label>
-                          <input
-                            value={server.note || ""}
-                            onChange={(event) => updateServer(server.id, { note: event.target.value })}
-                            placeholder="如：3090 工作站 / 云端节点"
-                            className="px-3 py-2.5 bg-[var(--bg-surface)] border border-[var(--border-default)] text-[13px] text-[var(--text-primary)] outline-none focus:border-[var(--gold-primary)] transition"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="flex flex-col gap-1.5">
-                        <label className="text-[11px] text-[var(--text-muted)]">服务地址</label>
-                        <input
-                          value={server.url}
-                          onChange={(event) => updateServer(server.id, { url: event.target.value })}
-                          placeholder="http://127.0.0.1:8188"
-                          className="px-3 py-2.5 bg-[var(--bg-surface)] border border-[var(--border-default)] text-[13px] text-[var(--text-primary)] outline-none focus:border-[var(--gold-primary)] transition font-mono"
-                        />
-                      </div>
-
-                      <div className="grid grid-cols-4 gap-3">
-                        <div className="flex flex-col gap-1">
-                          <span className="text-[11px] text-[var(--text-muted)]">在线状态</span>
-                          <span className={`text-[12px] font-medium ${status?.online ? "text-emerald-400" : "text-[var(--text-secondary)]"}`}>
-                            {status ? (status.online ? "在线" : "离线") : "未探测"}
-                          </span>
-                        </div>
-                        <div className="flex flex-col gap-1">
-                          <span className="text-[11px] text-[var(--text-muted)]">延迟</span>
-                          <span className="text-[12px] text-[var(--text-primary)]">{status ? `${status.latencyMs} ms` : "--"}</span>
-                        </div>
-                        <div className="flex flex-col gap-1">
-                          <span className="text-[11px] text-[var(--text-muted)]">队列</span>
-                          <span className="text-[12px] text-[var(--text-primary)]">
-                            {status ? `${status.queueRunning}/${status.queuePending}` : "--/--"}
-                          </span>
-                        </div>
-                        <div className="flex flex-col gap-1">
-                          <span className="text-[11px] text-[var(--text-muted)]">节点数</span>
-                          <span className="text-[12px] text-[var(--text-primary)]">{status ? status.nodeCount : "--"}</span>
-                        </div>
-                      </div>
-
-                      {(status?.deviceName || status?.comfyVersion || status?.error || server.note) && (
-                        <div className="flex flex-col gap-1.5 px-3 py-2.5 bg-[var(--bg-surface)] border border-[var(--border-default)]">
-                          {server.note && <span className="text-[11px] text-[var(--text-secondary)]">备注：{server.note}</span>}
-                          {status?.deviceName && <span className="text-[11px] text-[var(--text-secondary)]">设备：{status.deviceName}</span>}
-                          {status?.comfyVersion && <span className="text-[11px] text-[var(--text-secondary)]">版本：{status.comfyVersion}</span>}
-                          {status?.error && <span className="text-[11px] text-red-400">错误：{status.error}</span>}
-                        </div>
-                      )}
+                    <div key={server.id} className="grid grid-cols-[1fr_2fr_80px_120px] items-center gap-4 border border-[var(--border-default)] px-4 py-3">
+                      <span className="truncate text-sm font-medium text-[var(--text-primary)]">{server.name}</span>
+                      <span className="truncate text-xs text-[var(--text-secondary)]">{server.url}</span>
+                      <span className="flex items-center gap-1.5">
+                        {state?.status === "testing" ? <Loader className="h-3 w-3 animate-spin text-yellow-400" /> : <span className={`inline-block h-2 w-2 rounded-full ${state?.status === "online" ? "bg-green-400" : state?.status === "error" ? "bg-red-500" : "bg-red-400"}`} />}
+                        <span className={`text-xs font-medium ${statusClass}`}>{statusLabel}</span>
+                        {state?.latencyMs ? <span className="ml-1 text-[10px] text-[var(--text-muted)]">{state.latencyMs}ms</span> : null}
+                      </span>
+                      <span className="flex items-center gap-2">
+                        <button type="button" onClick={() => checkServer(server)} disabled={checkingServerId === server.id} className="border border-[var(--border-default)] px-2.5 py-1 text-xs text-[var(--text-secondary)] transition hover:border-[var(--gold-primary)] hover:text-[var(--text-primary)] disabled:opacity-50">测试</button>
+                        {deleteServerId === server.id ? (
+                          <>
+                            <button type="button" onClick={() => removeServer(server.id)} className="border border-red-400/40 bg-red-400/20 px-2 py-1 text-xs font-semibold text-red-400">确认</button>
+                            <button type="button" onClick={() => setDeleteServerId(null)} className="border border-[var(--border-default)] px-2 py-1 text-xs text-[var(--text-secondary)]">取消</button>
+                          </>
+                        ) : (
+                          <button type="button" onClick={() => setDeleteServerId(server.id)} className="border border-[var(--border-default)] px-2 py-1 text-xs text-red-400 transition hover:border-red-400/30 hover:bg-red-400/10">删除</button>
+                        )}
+                      </span>
                     </div>
                   );
-                })}
+                })
+              )}
 
-                <button
-                  onClick={addServer}
-                  className="flex items-center justify-center gap-2 py-3 border border-dashed border-[var(--border-default)] text-[13px] text-[var(--text-secondary)] hover:border-[var(--gold-primary)] hover:text-[var(--gold-primary)] transition cursor-pointer"
-                >
-                  <Plus size={14} />
-                  新增 ComfyUI 服务器
-                </button>
-              </div>
-            )}
-          </section>
-
-          <section className="flex flex-col gap-4 border border-[var(--border-default)] p-6">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <Workflow size={18} className="text-[var(--gold-primary)]" />
-                <div>
-                  <h2 className="text-[18px] font-semibold text-[var(--text-primary)]">工作流提交面板</h2>
-                  <p className="text-[12px] text-[var(--text-secondary)]">
-                    当前目标：{activeServer ? `${activeServer.name} · ${activeServer.url}` : "未选择服务器"}
-                  </p>
+              {addingServer ? (
+                <div className="mt-1 border border-[var(--gold-primary)]/30 bg-[var(--bg-panel)] p-4">
+                  <h3 className="mb-3 text-sm font-semibold text-[var(--text-primary)]">添加新服务器</h3>
+                  <div className="flex items-end gap-3">
+                    <div className="w-48 flex-shrink-0">
+                      <label className="mb-1 block text-xs text-[var(--text-secondary)]">名称</label>
+                      <input value={newServerName} onChange={(event) => setNewServerName(event.target.value)} placeholder="例: AutoDL-4090" className="h-8 w-full border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--gold-primary)]/50" />
+                    </div>
+                    <div className="flex-1">
+                      <label className="mb-1 block text-xs text-[var(--text-secondary)]">服务器地址</label>
+                      <input value={newServerAddress} onChange={(event) => setNewServerAddress(event.target.value)} placeholder="http://ip:port 或 https://domain:port" className="h-8 w-full border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--gold-primary)]/50" />
+                    </div>
+                    <button type="button" onClick={addServer} className="h-8 flex-shrink-0 bg-[var(--gold-primary)] px-4 text-xs font-semibold text-[#0A0A0A] transition hover:brightness-110">保存并测试</button>
+                    <button type="button" onClick={() => { setAddingServer(false); setNewServerName(""); setNewServerAddress(""); }} className="h-8 flex-shrink-0 border border-[var(--border-default)] px-3 text-xs text-[var(--text-secondary)]">取消</button>
+                  </div>
                 </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setWorkflowText(DEFAULT_WORKFLOW_TEXT)}
-                  className="flex items-center gap-1.5 px-3.5 py-2 border border-[var(--border-default)] text-[12px] text-[var(--text-secondary)] hover:border-[var(--gold-primary)] hover:text-[var(--gold-primary)] transition cursor-pointer"
-                >
-                  <SquareTerminal size={12} />
-                  载入示例
+              ) : (
+                <button type="button" onClick={() => setAddingServer(true)} className="mt-1 flex w-full cursor-pointer items-center justify-center gap-2 border border-dashed border-[var(--gold-primary)]/30 bg-[var(--gold-primary)]/5 py-3 text-sm text-[var(--gold-primary)] transition hover:bg-[var(--gold-primary)]/10">
+                  <Plus className="h-4 w-4" />
+                  添加服务器
                 </button>
-                <button
-                  onClick={submitWorkflow}
-                  disabled={submitting}
-                  className="flex items-center gap-1.5 px-3.5 py-2 bg-[var(--gold-primary)] text-[12px] font-medium text-[#0A0A0A] hover:brightness-110 transition cursor-pointer disabled:opacity-40"
-                >
-                  {submitting ? <Loader size={12} className="animate-spin" /> : <Send size={12} />}
-                  提交到队列
-                </button>
-              </div>
-            </div>
+              )}
+            </>
+          ) : null}
 
-            <div className="flex flex-col gap-2">
-              <label className="text-[12px] font-medium text-[var(--text-secondary)]">Workflow JSON</label>
-              <textarea
-                value={workflowText}
-                onChange={(event) => setWorkflowText(event.target.value)}
-                spellCheck={false}
-                className="min-h-[520px] resize-y bg-[#0D0D0D] border border-[var(--border-default)] px-4 py-3 font-mono text-[12px] leading-6 text-[var(--text-primary)] outline-none focus:border-[var(--gold-primary)] transition"
+          <div className="my-6 h-px bg-[var(--border-default)]" />
+
+          <div className="mb-6">
+            <h2 className="mb-1 text-base font-semibold text-[var(--text-primary)]">工作流配置</h2>
+            <p className="mb-4 text-xs text-[var(--text-muted)]">{isThirdParty ? "上传工作流 JSON 或填写本地 ComfyUI 工作流路径" : "填写工作流 ID，或从工作流 URL 中自动解析"}</p>
+            <label className="mb-2 block text-[13px] font-semibold text-[var(--text-primary)]">工作流 {isThirdParty ? "JSON / 路径" : "ID / URL"}</label>
+            <div className="relative">
+              <input value={currentWorkflow.workflowId} onChange={(event) => applyWorkflowIdInput(event.target.value)} placeholder={isThirdParty ? "粘贴工作流 JSON 或填写工作流文件路径" : "https://www.runninghub.cn/task/xxxx 或直接输入 task_id"} className="h-11 w-full border border-[var(--border-default)] bg-[var(--bg-panel)] px-4 pr-28 text-sm text-[var(--text-primary)] outline-none transition placeholder:text-[var(--text-muted)] focus:border-[var(--gold-primary)]/50" />
+              {!isThirdParty ? <button type="button" onClick={parseWorkflowUrl} className="absolute right-2 top-1/2 -translate-y-1/2 bg-[var(--gold-primary)]/15 px-3 py-1.5 text-xs text-[var(--gold-primary)] transition hover:bg-[var(--gold-primary)]/25">解析 URL</button> : null}
+            </div>
+            {currentWorkflow.verified ? (
+              <div className="mt-3 flex items-center gap-2 bg-green-400/5 px-4 py-2.5 text-xs text-green-400">
+                <CheckCircle2 className="h-4 w-4" />
+                <span>
+                  工作流已验证：{currentWorkflow.workflowName || currentWorkflow.workflowId}
+                  {currentWorkflow.nodeCount ? ` | ${currentWorkflow.nodeCount} 个节点` : ""}
+                  {currentWorkflow.inputCount ? ` | ${currentWorkflow.inputCount} 个输入参数` : ""}
+                </span>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="mb-6 flex flex-wrap items-center gap-3">
+            <label className="flex cursor-pointer items-center gap-2 border border-[var(--border-default)] px-4 py-2 text-sm text-[var(--text-secondary)] transition hover:border-[var(--gold-primary)] hover:text-[var(--text-primary)]">
+              <Upload className="h-4 w-4" />
+              导入工作流
+              <input
+                type="file"
+                accept=".json,application/json"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) void importWorkflowFile(file);
+                  event.currentTarget.value = "";
+                }}
               />
-              <div className="flex items-start gap-2 px-3 py-2.5 bg-[var(--bg-surface)] border border-[var(--border-default)]">
-                <Cpu size={13} className="text-[var(--gold-primary)] mt-0.5 shrink-0" />
-                <div className="flex flex-col gap-1">
-                  <span className="text-[11px] text-[var(--text-secondary)]">
-                    这个示例工作流是最小文本生图骨架，第一次测试时记得把 `ckpt_name` 改成你本地 ComfyUI 真实存在的模型名。
-                  </span>
-                  <span className="text-[11px] text-[var(--text-secondary)]">
-                    如果你已经有成熟 workflow，直接把 API 导出的 JSON 整段贴进来即可。
-                  </span>
-                </div>
+            </label>
+            <button
+              type="button"
+              onClick={autoDetectMappings}
+              disabled={detectingMappings}
+              className="flex cursor-pointer items-center gap-2 border border-[var(--border-default)] px-4 py-2 text-sm text-[var(--text-secondary)] transition hover:border-[var(--gold-primary)] hover:text-[var(--text-primary)] disabled:opacity-50"
+            >
+              {detectingMappings ? <Loader className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+              自动检测
+            </button>
+            <button
+              type="button"
+              onClick={saveCurrentAsPreset}
+              className="flex cursor-pointer items-center gap-2 border border-[var(--border-default)] px-4 py-2 text-sm text-[var(--text-secondary)] transition hover:border-[var(--gold-primary)] hover:text-[var(--text-primary)]"
+            >
+              <Plus className="h-4 w-4" />
+              保存为预设工作流
+            </button>
+          </div>
+
+          <div className="mb-6">
+            <div className="mb-1 flex items-center justify-between gap-4">
+              <h2 className="text-base font-semibold text-[var(--text-primary)]">节点映射</h2>
+              <span className="text-xs text-[var(--text-muted)]">自动检测可先生成通用模板，再按平台微调</span>
+            </div>
+            <p className="mb-4 text-xs text-[var(--text-muted)]">
+              将工作流中的输入输出节点映射到「提示词 / 参考图 / 输出结果」。官方平台一般只需确认 3 个关键节点。
+            </p>
+            <div className="grid gap-3 lg:grid-cols-3">
+              <MappingCard
+                title="提示词节点"
+                description="文本提示词输入节点，例如 CLIPTextEncode / PromptInput"
+                accent="gold"
+                value={currentNodeMappings.find((item) => item.role === "prompt")}
+                onChange={(patch) => updateMapping("prompt", patch)}
+              />
+              <MappingCard
+                title="参考图节点"
+                description="图像或首帧输入节点，例如 LoadImage / ImageInput"
+                accent="blue"
+                value={currentNodeMappings.find((item) => item.role === "refImage")}
+                onChange={(patch) => updateMapping("refImage", patch)}
+              />
+              <MappingCard
+                title="输出节点"
+                description="图片或视频输出节点，例如 SaveImage / SaveVideo"
+                accent="green"
+                value={currentNodeMappings.find((item) => item.role === "output")}
+                onChange={(patch) => updateMapping("output", patch)}
+              />
+            </div>
+          </div>
+
+          <div className="mb-8">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-base font-semibold text-[var(--text-primary)]">预设工作流</h2>
+                <p className="mt-1 text-xs text-[var(--text-muted)]">支持官方预设、自定义预设、导入导出和一键套用。</p>
               </div>
+              <label className="flex cursor-pointer items-center gap-2 border border-[var(--border-default)] px-3 py-2 text-xs text-[var(--text-secondary)] transition hover:border-[var(--gold-primary)] hover:text-[var(--text-primary)]">
+                <Upload className="h-3.5 w-3.5" />
+                导入预设工作流
+                <input
+                  type="file"
+                  accept=".json,application/json"
+                  className="hidden"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) void importPresetFile(file);
+                    event.currentTarget.value = "";
+                  }}
+                />
+              </label>
             </div>
 
-            <div className="grid grid-cols-3 gap-3">
-              <div className="border border-[var(--border-default)] p-4">
-                <span className="text-[11px] text-[var(--text-muted)]">推荐流程</span>
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--text-secondary)]">
-                  先做状态探测，再提交示例 workflow，确认 `/prompt` 可写入后再接更复杂的节点图。
-                </p>
-              </div>
-              <div className="border border-[var(--border-default)] p-4">
-                <span className="text-[11px] text-[var(--text-muted)]">适合接入</span>
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--text-secondary)]">
-                  本地 AIGC 工作站、远程 GPU 节点、已有的 ComfyUI API 网关。
-                </p>
-              </div>
-              <div className="border border-[var(--border-default)] p-4">
-                <span className="text-[11px] text-[var(--text-muted)]">下一步</span>
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--text-secondary)]">
-                  接通后，可继续把提示词、参考图和分镜参数投递到 ComfyUI 编排链路。
-                </p>
-              </div>
-            </div>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {presets.map((preset) => {
+                const isCustom = settings.customPresets.some((item) => item.id === preset.id);
+                const isActivePreset = settings.activePresetId === preset.id;
+                const platformLabel = COMFY_UI_PLATFORM_OPTIONS.find((item) => item.key === preset.platform)?.label || preset.platform;
+                return (
+                  <div
+                    key={preset.id}
+                    className={`border p-4 transition ${isActivePreset ? "border-[var(--gold-primary)] bg-[var(--gold-primary)]/6 shadow-[0_0_0_1px_rgba(201,163,92,0.16)]" : "border-[var(--border-default)] bg-[var(--bg-panel)]"}`}
+                  >
+                    <div className="mb-3 flex items-start justify-between gap-3">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="text-sm font-semibold text-[var(--text-primary)]">{preset.name}</h3>
+                          {isCustom ? (
+                            <span className="rounded border border-[var(--gold-primary)]/30 px-1.5 py-0.5 text-[10px] font-semibold text-[var(--gold-primary)]">
+                              自定义
+                            </span>
+                          ) : null}
+                        </div>
+                        <p className="mt-1 whitespace-pre-line text-xs leading-5 text-[var(--text-secondary)]">{preset.description}</p>
+                      </div>
+                      <span className="rounded bg-[var(--bg-surface)] px-2 py-1 text-[10px] text-[var(--text-secondary)]">{platformLabel}</span>
+                    </div>
 
-            {submitResult && (
-              <div className="flex flex-col gap-3 border border-[var(--border-default)] bg-[var(--bg-surface)] p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <CheckCircle2 size={15} className={submitResult.success ? "text-emerald-400" : "text-red-400"} />
-                    <span className="text-[13px] font-medium text-[var(--text-primary)]">
-                      {submitResult.success ? "最近一次提交成功" : "最近一次提交失败"}
-                    </span>
+                    <div className="mb-3 flex flex-wrap gap-2">
+                      {preset.tags.map((tag) => (
+                        <span key={`${preset.id}-${tag}`} className="rounded border border-[var(--border-default)] px-2 py-0.5 text-[10px] text-[var(--text-secondary)]">
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+
+                    <div className="space-y-1 text-[11px] text-[var(--text-muted)]">
+                      <div>工作流 ID: {preset.workflowId || "待填写"}</div>
+                      <div>节点映射: {preset.nodeMappings.length} 项</div>
+                      <div>使用次数: {preset.runs}</div>
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => applyPreset(preset)}
+                        className="flex cursor-pointer items-center gap-1.5 bg-[var(--gold-primary)] px-3 py-1.5 text-xs font-semibold text-[#0A0A0A] transition hover:brightness-110"
+                      >
+                        <Check className="h-3.5 w-3.5" />
+                        套用
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => clonePreset(preset)}
+                        className="flex cursor-pointer items-center gap-1.5 border border-[var(--border-default)] px-3 py-1.5 text-xs text-[var(--text-secondary)] transition hover:border-[var(--gold-primary)] hover:text-[var(--text-primary)]"
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                        复制
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => exportPreset(preset)}
+                        className="flex cursor-pointer items-center gap-1.5 border border-[var(--border-default)] px-3 py-1.5 text-xs text-[var(--text-secondary)] transition hover:border-[var(--gold-primary)] hover:text-[var(--text-primary)]"
+                      >
+                        <Upload className="h-3.5 w-3.5" />
+                        导出
+                      </button>
+                      {isCustom ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setEditingPreset({ ...preset })}
+                            className="flex cursor-pointer items-center gap-1.5 border border-[var(--border-default)] px-3 py-1.5 text-xs text-[var(--text-secondary)] transition hover:border-[var(--gold-primary)] hover:text-[var(--text-primary)]"
+                          >
+                            <Edit3 className="h-3.5 w-3.5" />
+                            编辑
+                          </button>
+                          {deletePresetId === preset.id ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => removePreset(preset.id)}
+                                className="flex cursor-pointer items-center gap-1.5 border border-red-400/30 bg-red-400/10 px-3 py-1.5 text-xs text-red-400"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                确认删除
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setDeletePresetId(null)}
+                                className="border border-[var(--border-default)] px-3 py-1.5 text-xs text-[var(--text-secondary)]"
+                              >
+                                取消
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setDeletePresetId(preset.id)}
+                              className="flex cursor-pointer items-center gap-1.5 border border-[var(--border-default)] px-3 py-1.5 text-xs text-red-400 transition hover:border-red-400/30 hover:bg-red-400/10"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              删除
+                            </button>
+                          )}
+                        </>
+                      ) : null}
+                    </div>
                   </div>
-                  <span className="text-[11px] text-[var(--text-muted)]">{submitResult.serverName}</span>
-                </div>
-                <div className="grid grid-cols-3 gap-3">
-                  <div>
-                    <span className="text-[11px] text-[var(--text-muted)]">Prompt ID</span>
-                    <p className="mt-1 font-mono text-[12px] text-[var(--text-primary)] break-all">
-                      {submitResult.promptId || "--"}
-                    </p>
-                  </div>
-                  <div>
-                    <span className="text-[11px] text-[var(--text-muted)]">Client ID</span>
-                    <p className="mt-1 font-mono text-[12px] text-[var(--text-primary)] break-all">
-                      {submitResult.clientId}
-                    </p>
-                  </div>
-                  <div>
-                    <span className="text-[11px] text-[var(--text-muted)]">节点数量</span>
-                    <p className="mt-1 text-[12px] text-[var(--text-primary)]">{submitResult.workflowNodes}</p>
-                  </div>
-                </div>
-                {submitResult.error && (
-                  <div className="rounded border border-red-500/20 bg-red-500/5 px-3 py-2 text-[12px] text-red-400">
-                    {submitResult.error}
-                  </div>
-                )}
-                <pre className="max-h-[240px] overflow-auto bg-[#0D0D0D] px-4 py-3 text-[11px] leading-6 text-[var(--text-secondary)]">
-                  {JSON.stringify(submitResult.rawResponse ?? submitResult, null, 2)}
-                </pre>
-              </div>
-            )}
-          </section>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="border border-[var(--border-default)] bg-[var(--bg-panel)] px-4 py-3 text-xs text-[var(--text-secondary)]">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <span>配置文件：{configFile || "未保存到磁盘"}</span>
+              <span>当前服务器：{isThirdParty ? servers.find((item) => item.id === activeServerId)?.name || "未选择" : "云端平台模式"}</span>
+            </div>
+          </div>
         </div>
       </main>
+
+      {editingPreset ? (
+        <PresetModal
+          preset={editingPreset}
+          onClose={() => setEditingPreset(null)}
+          onSave={saveEditedPreset}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+type MappingCardProps = {
+  title: string;
+  description: string;
+  accent: "gold" | "blue" | "green";
+  value?: ComfyUiWorkflowNodeMapping;
+  onChange: (patch: Partial<ComfyUiWorkflowNodeMapping>) => void;
+};
+
+function MappingCard({ title, description, accent, value, onChange }: MappingCardProps) {
+  const accentClass =
+    accent === "blue"
+      ? "border-blue-400/20 bg-blue-400/5"
+      : accent === "green"
+      ? "border-green-400/20 bg-green-400/5"
+      : "border-[var(--gold-primary)]/20 bg-[var(--gold-primary)]/5";
+
+  return (
+    <div className={`border p-4 ${accentClass}`}>
+      <div className="mb-2">
+        <h3 className="text-sm font-semibold text-[var(--text-primary)]">{title}</h3>
+        <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">{description}</p>
+      </div>
+
+      <div className="space-y-3">
+        <div>
+          <label className="mb-1 block text-xs text-[var(--text-secondary)]">节点 ID</label>
+          <input
+            value={value?.nodeId || ""}
+            onChange={(event) => onChange({ nodeId: event.target.value })}
+            placeholder="例如 6 / 12 / output_node"
+            className="h-9 w-full border border-[var(--border-default)] bg-[var(--bg-panel)] px-3 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--gold-primary)]/50"
+          />
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <div>
+            <label className="mb-1 block text-xs text-[var(--text-secondary)]">字段名</label>
+            <input
+              value={value?.field || ""}
+              onChange={(event) => onChange({ field: event.target.value })}
+              placeholder="text / image / images / video"
+              className="h-9 w-full border border-[var(--border-default)] bg-[var(--bg-panel)] px-3 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--gold-primary)]/50"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-[var(--text-secondary)]">节点类型</label>
+            <input
+              value={value?.nodeType || ""}
+              onChange={(event) => onChange({ nodeType: event.target.value })}
+              placeholder="CLIPTextEncode / SaveImage"
+              className="h-9 w-full border border-[var(--border-default)] bg-[var(--bg-panel)] px-3 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--gold-primary)]/50"
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type PresetModalProps = {
+  preset: ComfyUiWorkflowPreset;
+  onClose: () => void;
+  onSave: (preset: ComfyUiWorkflowPreset) => void;
+};
+
+function PresetModal({ preset, onClose, onSave }: PresetModalProps) {
+  const [draft, setDraft] = useState<ComfyUiWorkflowPreset>(preset);
+
+  function updateMapping(role: ComfyUiWorkflowNodeMapping["role"], patch: Partial<ComfyUiWorkflowNodeMapping>) {
+    setDraft((current) => {
+      const existing = current.nodeMappings.find((item) => item.role === role) ?? { role, nodeId: "", field: "", nodeType: "" };
+      const next = [...current.nodeMappings.filter((item) => item.role !== role), { ...existing, ...patch }];
+      const order = { prompt: 0, refImage: 1, output: 2 };
+      next.sort((a, b) => order[a.role] - order[b.role]);
+      return { ...current, nodeMappings: next };
+    });
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+      <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto border border-[var(--border-default)] bg-[var(--bg-panel)] p-6 shadow-2xl">
+        <div className="mb-4 flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold text-[var(--text-primary)]">编辑工作流预设</h2>
+            <p className="mt-1 text-xs text-[var(--text-muted)]">可调整平台、工作流 ID 和 3 个关键节点映射。</p>
+          </div>
+          <button type="button" onClick={onClose} className="text-[var(--text-secondary)] transition hover:text-[var(--text-primary)]">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <div>
+            <label className="mb-1 block text-xs text-[var(--text-secondary)]">名称</label>
+            <input
+              value={draft.name}
+              onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
+              className="h-10 w-full border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--gold-primary)]/50"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-[var(--text-secondary)]">平台</label>
+            <select
+              value={draft.platform}
+              onChange={(event) =>
+                setDraft((current) => ({ ...current, platform: event.target.value as ComfyUiPlatformKey }))
+              }
+              className="h-10 w-full border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--gold-primary)]/50"
+            >
+              {COMFY_UI_PLATFORM_OPTIONS.map((option) => (
+                <option key={option.key} value={option.key}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <label className="mb-1 block text-xs text-[var(--text-secondary)]">描述</label>
+          <textarea
+            value={draft.description}
+            onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))}
+            rows={3}
+            className="w-full border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--gold-primary)]/50"
+          />
+        </div>
+
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div>
+            <label className="mb-1 block text-xs text-[var(--text-secondary)]">标签（逗号分隔）</label>
+            <input
+              value={draft.tags.join(", ")}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  tags: event.target.value
+                    .split(",")
+                    .map((item) => item.trim())
+                    .filter(Boolean),
+                }))
+              }
+              className="h-10 w-full border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--gold-primary)]/50"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-[var(--text-secondary)]">工作流 ID / URL</label>
+            <input
+              value={draft.workflowId}
+              onChange={(event) => setDraft((current) => ({ ...current, workflowId: event.target.value }))}
+              className="h-10 w-full border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--gold-primary)]/50"
+            />
+          </div>
+        </div>
+
+        <div className="mt-5 grid gap-3 lg:grid-cols-3">
+          <MappingCard
+            title="提示词节点"
+            description="用于写入 prompt 文本"
+            accent="gold"
+            value={draft.nodeMappings.find((item) => item.role === "prompt")}
+            onChange={(patch) => updateMapping("prompt", patch)}
+          />
+          <MappingCard
+            title="参考图节点"
+            description="用于写入 image / 首帧"
+            accent="blue"
+            value={draft.nodeMappings.find((item) => item.role === "refImage")}
+            onChange={(patch) => updateMapping("refImage", patch)}
+          />
+          <MappingCard
+            title="输出节点"
+            description="用于读取图片 / 视频结果"
+            accent="green"
+            value={draft.nodeMappings.find((item) => item.role === "output")}
+            onChange={(patch) => updateMapping("output", patch)}
+          />
+        </div>
+
+        <div className="mt-6 flex items-center justify-end gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="border border-[var(--border-default)] px-4 py-2 text-sm text-[var(--text-secondary)] transition hover:border-[var(--gold-primary)] hover:text-[var(--text-primary)]"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            onClick={() => onSave(draft)}
+            className="bg-[var(--gold-primary)] px-4 py-2 text-sm font-semibold text-[#0A0A0A] transition hover:brightness-110"
+          >
+            保存
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

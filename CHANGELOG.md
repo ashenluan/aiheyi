@@ -1,5 +1,20 @@
-# FEICAI Studio 更新日志
+# 合一漫剧 更新日志
 
+## 2026-03-29 — V2.10
+
+### 同步
+- 官方在线更新版本同步到 `V2.10`
+- 当前版本文件与热更新状态统一收平到 `V2.10`
+
+### 新增
+- 回迁 `Flow HTTP / Flow 授权检查 / 图片属性菜单` 三条新版链路
+- 侧边栏入口更新为 `Gemini Tab / Flow`
+
+### 对齐
+- 输出目录新增 `flow-images / flow-data`
+- Flow 图片支持打开目录、属性查看与本地清单管理
+
+---
 ## 2026-03-22 — V2.08j
 
 ### 同步
@@ -180,3 +195,4 @@
 | `feicai-studio/app/api/gemini-tab/start-service/route.ts` | `findGeminiTab()` 新增 `path.join(cwd, "GeminiTab-dist")` 和 `path.join(cwd, "GeminiTab")` 搜索路径，兼容打包后目录结构 |
 
 **打包产物**：`D:\BaiduNetdiskDownload\FeiCai work\FEICAI-Studio.exe`（93.6 MB，含 GeminiTab-dist）
+

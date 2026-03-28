@@ -1215,43 +1215,56 @@ export default function VideoPage() {
     toast("角色已删除", "info");
   }
 
-  // ★ 贞贞工坊上传适配器 — 工作台素材 → img2char 流水线
-  const zhenzhenUploadAdapters: CharUploadAdapter[] = [
+  async function uploadStudioItemToSora(
+    route: "/api/zhenzhen/img2char" | "/api/geeknow/img2char",
+    item: StudioItem,
+    apiKey: string,
+    baseUrl: string,
+  ) {
+    const res = await fetch(route, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        apiKey,
+        baseUrl: baseUrl || undefined,
+        imageData: item.referenceImage,
+        category: item.category,
+        nickname: item.name,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `img2char 失败 (${res.status})`);
+    }
+    const data = await res.json();
+    return {
+      id: data.id || `char-${Date.now()}`,
+      username: data.username || item.name,
+      profilePicture: data.profile_picture_url || "",
+      permalink: data.permalink || "",
+      createdAt: Date.now(),
+      category: item.category,
+      nickname: item.name,
+      fromVideoUrl: data.videoUrl || "",
+      fromTaskId: data.taskId || "",
+    } satisfies SoraCharacter;
+  }
+
+  // ★ 多平台上传适配器 — 工作台素材 → img2char 流水线
+  const soraUploadAdapters: CharUploadAdapter[] = [
     {
       name: "贞贞工坊",
       async upload(item: StudioItem, apiKey: string, baseUrl: string) {
-        // 调用 img2char API：参考图 → 视频 → Sora 角色
-        const res = await fetch("/api/zhenzhen/img2char", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            apiKey,
-            baseUrl: baseUrl || undefined,
-            imageData: item.referenceImage,
-            category: item.category,
-            nickname: item.name,
-          }),
-        });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err.error || `img2char 失败 (${res.status})`);
-        }
-        const data = await res.json();
-        // 返回 SoraCharacter
-        return {
-          id: data.id || `char-${Date.now()}`,
-          username: data.username || item.name,
-          profilePicture: data.profile_picture_url || "",
-          permalink: data.permalink || "",
-          createdAt: Date.now(),
-          category: item.category,
-          nickname: item.name,
-          fromVideoUrl: data.videoUrl || "",
-        } satisfies SoraCharacter;
+        return uploadStudioItemToSora("/api/zhenzhen/img2char", item, apiKey, baseUrl);
+      },
+    },
+    {
+      name: "GeekNow",
+      async upload(item: StudioItem, apiKey: string, baseUrl: string) {
+        return uploadStudioItemToSora("/api/geeknow/img2char", item, apiKey, baseUrl);
       },
     },
   ];
-
   // Current mode prompt (per-mode independent; single mode is per-cell, batchRelay is per-pair)
   const singleCellKey = `b${epState.selectedBeat}-g${epState.selectedGrid}`;
   const batchRelayPrompts = epState.batchRelayPrompts || { ab: "", bc: "", cd: "" };
@@ -3513,7 +3526,7 @@ ${inputImages.length > 0 ? `<div class="sheet-list">\n${imageCards}\n</div>` : `
                   onDelete={deleteSoraCharacter}
                   apiKey={selectedModel.apiKey || ""}
                   baseUrl={selectedModel.url?.replace(/\/+$/, "") || ""}
-                  adapters={zhenzhenUploadAdapters}
+                  adapters={soraUploadAdapters}
                   smartMatchText={soraSmartMatchText}
                   smartMatchLabel={soraSmartMatchLabel}
                 />

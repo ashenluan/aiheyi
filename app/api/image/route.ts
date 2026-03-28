@@ -21,6 +21,7 @@ interface ImageRequest {
   imageSize?: string;           // "1K" | "2K" | "4K"
   aspectRatio?: string;         // e.g. "16:9", "1:1", "4:3"
   format?: "gemini" | "openai" | "openai-images"; // API protocol format (default: "gemini")
+  testOnly?: boolean;           // lightweight connection test without returning generated images
 }
 
 /**
@@ -417,7 +418,7 @@ function parseOpenAIJsonResponse(data: Record<string, unknown>): OpenAIImageResu
  * 适用于七牛云 kling / gemini-image 等专用图像生成接口。
  */
 async function handleOpenAIImagesFormat(body: ImageRequest): Promise<Response> {
-  const { apiKey, baseUrl, model, prompt, referenceImages, imageSize, aspectRatio } = body;
+  const { apiKey, baseUrl, model, prompt, referenceImages, imageSize, aspectRatio, testOnly } = body;
 
   let cleanBase = (baseUrl || "").replace(/\/+$/, "");
   cleanBase = cleanBase
@@ -428,6 +429,35 @@ async function handleOpenAIImagesFormat(body: ImageRequest): Promise<Response> {
   const url = `${cleanBase}/v1/images/generations`;
 
   const requestBody: Record<string, unknown> = { model, prompt };
+
+  if (testOnly) {
+    try {
+      const testRes = await fetch(url, {
+        method: "POST",
+        headers: {
+          ...COMMON_HEADERS,
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({ model, prompt: "test" }),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!testRes.ok) {
+        const errText = await testRes.text().catch(() => "");
+        return NextResponse.json(
+          { error: `图像接口测试失败 (${testRes.status}): ${errText.slice(0, 240)}` },
+          { status: testRes.status >= 500 ? 502 : testRes.status }
+        );
+      }
+      return NextResponse.json({
+        success: true,
+        message: "图像接口连接测试成功",
+        endpoint: url,
+      });
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : "未知错误";
+      return NextResponse.json({ error: `图像接口网络测试失败: ${msg}` }, { status: 500 });
+    }
+  }
 
   // ★ 参考图支持：将 data URL / HTTP URL 转为 base64 数组传入 image 字段
   if (referenceImages && referenceImages.length > 0) {
@@ -555,7 +585,7 @@ async function handleOpenAIImagesFormat(body: ImageRequest): Promise<Response> {
  * Handle image generation via OpenAI-compatible /v1/chat/completions endpoint.
  */
 async function handleOpenAIFormat(body: ImageRequest): Promise<Response> {
-  const { apiKey, baseUrl, model, prompt, referenceImages, referenceLabels } = body;
+  const { apiKey, baseUrl, model, prompt, referenceImages, referenceLabels, testOnly } = body;
 
   let cleanBase = (baseUrl || "").replace(/\/+$/, "");
   cleanBase = cleanBase
@@ -565,6 +595,41 @@ async function handleOpenAIFormat(body: ImageRequest): Promise<Response> {
     .replace(/\/v1beta.*$/i, "");
 
   const chatUrl = `${cleanBase}/v1/chat/completions`;
+
+  if (testOnly) {
+    try {
+      const testRes = await fetch(chatUrl, {
+        method: "POST",
+        headers: {
+          ...COMMON_HEADERS,
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "user", content: "回复OK" }],
+          stream: false,
+          max_tokens: 8,
+        }),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!testRes.ok) {
+        const errText = await testRes.text().catch(() => "");
+        return NextResponse.json(
+          { error: `图像通道测试失败 (${testRes.status}): ${errText.slice(0, 240)}` },
+          { status: testRes.status >= 500 ? 502 : testRes.status }
+        );
+      }
+      return NextResponse.json({
+        success: true,
+        message: "图像通道连接测试成功",
+        endpoint: chatUrl,
+      });
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : "未知错误";
+      return NextResponse.json({ error: `图像通道网络测试失败: ${msg}` }, { status: 500 });
+    }
+  }
+
   const messages = await buildOpenAIMessages(prompt, referenceImages, referenceLabels);
 
   const requestBody = {
@@ -708,7 +773,7 @@ async function handleOpenAIFormat(body: ImageRequest): Promise<Response> {
 export async function POST(request: Request) {
   try {
     const body: ImageRequest = await request.json();
-    const { apiKey, baseUrl, model, prompt, referenceImages, referenceLabels, imageSize, aspectRatio, format } = body;
+    const { apiKey, baseUrl, model, prompt, referenceImages, referenceLabels, imageSize, aspectRatio, format, testOnly } = body;
 
     if (!apiKey || !model || !prompt) {
       return NextResponse.json(
@@ -743,6 +808,43 @@ export async function POST(request: Request) {
     // Two endpoints: streaming (prevents gateway timeout) and non-streaming (fallback)
     const streamUrl = `${cleanBase}/v1beta/models/${model}:streamGenerateContent?alt=sse`;
     const nonStreamUrl = `${cleanBase}/v1beta/models/${model}:generateContent`;
+
+    if (testOnly) {
+      try {
+        const testRes = await fetch(nonStreamUrl, {
+          method: "POST",
+          headers: {
+            ...COMMON_HEADERS,
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            contents: [{ role: "user", parts: [{ text: "回复OK" }] }],
+            generationConfig: {
+              responseModalities: ["TEXT"],
+              maxOutputTokens: 16,
+            },
+          }),
+          signal: AbortSignal.timeout(30000),
+        });
+
+        if (!testRes.ok) {
+          const errText = await testRes.text().catch(() => "");
+          return NextResponse.json(
+            { error: `图像接口测试失败 (${testRes.status}): ${errText.slice(0, 240)}` },
+            { status: testRes.status >= 500 ? 502 : testRes.status }
+          );
+        }
+
+        return NextResponse.json({
+          success: true,
+          message: "图像接口连接测试成功",
+          endpoint: nonStreamUrl,
+        });
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : "未知错误";
+        return NextResponse.json({ error: `图像接口网络测试失败: ${msg}` }, { status: 500 });
+      }
+    }
 
     const contents = await buildContents(prompt, referenceImages, referenceLabels);
 

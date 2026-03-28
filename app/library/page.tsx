@@ -62,14 +62,17 @@ const VIDEO_MODELS_STORAGE_KEY = "feicai-video-models";
 const SORA_CHARACTERS_STORAGE_KEY = "feicai-sora-characters";
 const SORA_UPLOAD_RECORDS_KEY = "feicai-sora-uploaded-chars";
 
+type SoraPlatform = "贞贞工坊" | "GeekNow";
+
 interface SoraUploadConfig {
   apiKey: string;
   baseUrl: string;
+  platform: SoraPlatform;
 }
 
 interface SoraUploadRecord {
   itemId: string;
-  platform: "贞贞工坊";
+  platform: SoraPlatform;
   soraId: string;
   username: string;
   uploadedAt: number;
@@ -78,7 +81,7 @@ interface SoraUploadRecord {
 interface BatchUploadTask {
   itemId: string;
   itemName: string;
-  platform: "贞贞工坊";
+  platform: SoraPlatform;
   status: "pending" | "uploading" | "success" | "error";
   progress: string;
   error?: string;
@@ -142,6 +145,16 @@ function toSoraCategory(tab: TabKey): SoraCharCategory {
   return "prop";
 }
 
+function resolveSoraUploadPlatform(baseUrl?: string): SoraPlatform {
+  const normalized = (baseUrl || "").toLowerCase();
+  if (normalized.includes("geeknow")) return "GeekNow";
+  return "贞贞工坊";
+}
+
+function resolveSoraUploadRoute(platform: SoraPlatform): "/api/zhenzhen/img2char" | "/api/geeknow/img2char" {
+  return platform === "GeekNow" ? "/api/geeknow/img2char" : "/api/zhenzhen/img2char";
+}
+
 function resolveSoraUploadConfig(): SoraUploadConfig | null {
   if (typeof window === "undefined") return null;
 
@@ -153,6 +166,7 @@ function resolveSoraUploadConfig(): SoraUploadConfig | null {
         return {
           apiKey: parsed.apiKey,
           baseUrl: (parsed.baseUrl || "https://ai.t8star.cn").replace(/\/+$/, ""),
+          platform: resolveSoraUploadPlatform(parsed.baseUrl || "https://ai.t8star.cn"),
         };
       }
     }
@@ -171,6 +185,7 @@ function resolveSoraUploadConfig(): SoraUploadConfig | null {
       return {
         apiKey: soraPreset.apiKey!,
         baseUrl: (soraPreset.url || "https://ai.t8star.cn").replace(/\/+$/, ""),
+        platform: resolveSoraUploadPlatform(soraPreset.url || "https://ai.t8star.cn"),
       };
     }
 
@@ -179,6 +194,7 @@ function resolveSoraUploadConfig(): SoraUploadConfig | null {
       return {
         apiKey: zhenzhenPreset.apiKey!,
         baseUrl: (zhenzhenPreset.url || "https://ai.t8star.cn").replace(/\/+$/, ""),
+        platform: resolveSoraUploadPlatform(zhenzhenPreset.url || "https://ai.t8star.cn"),
       };
     }
   } catch {
@@ -753,7 +769,14 @@ export default function LibraryPage() {
   }, []);
 
   const getSoraUploadRecord = useCallback(
-    (itemId: string) => soraUploads.find((item) => item.itemId === itemId && item.platform === "贞贞工坊"),
+    (itemId: string, preferredPlatform?: SoraPlatform) => {
+      const candidates = soraUploads.filter((item) => item.itemId === itemId);
+      if (preferredPlatform) {
+        const exact = candidates.find((item) => item.platform === preferredPlatform);
+        if (exact) return exact;
+      }
+      return [...candidates].sort((a, b) => b.uploadedAt - a.uploadedAt)[0];
+    },
     [soraUploads]
   );
 
@@ -878,7 +901,7 @@ export default function LibraryPage() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleRunEntityMatch, showEntityMatchModal]);
 
-  const persistSoraUpload = useCallback((sourceItem: DisplayItem, character: SoraCharacter) => {
+  const persistSoraUpload = useCallback((sourceItem: DisplayItem, character: SoraCharacter, platform: SoraPlatform) => {
     const cachedChars = (() => {
       try {
         return JSON.parse(localStorage.getItem(SORA_CHARACTERS_STORAGE_KEY) || "[]") as SoraCharacter[];
@@ -891,10 +914,10 @@ export default function LibraryPage() {
 
     setSoraUploads((prev) => {
       const next = [
-        ...prev.filter((item) => !(item.itemId === sourceItem.id && item.platform === "贞贞工坊")),
+        ...prev.filter((item) => !(item.itemId === sourceItem.id && item.platform === platform)),
         {
           itemId: sourceItem.id,
-          platform: "贞贞工坊",
+          platform,
           soraId: character.id,
           username: character.username,
           uploadedAt: Date.now(),
@@ -925,7 +948,7 @@ export default function LibraryPage() {
     }
 
     const imageData = await resolveUploadImageData(item.referenceImage);
-    const res = await fetch("/api/zhenzhen/img2char", {
+    const res = await fetch(resolveSoraUploadRoute(uploadConfig.platform), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -944,16 +967,19 @@ export default function LibraryPage() {
 
     const data = await res.json();
     return {
-      id: data.id || `char-${Date.now()}`,
-      username: data.username || item.name,
-      profilePicture: data.profile_picture_url || "",
-      permalink: data.permalink || "",
-      createdAt: Date.now(),
-      category: toSoraCategory(item.type),
-      nickname: item.name,
-      fromVideoUrl: data.videoUrl || "",
-      fromTaskId: data.taskId || "",
-    } satisfies SoraCharacter;
+      character: {
+        id: data.id || `char-${Date.now()}`,
+        username: data.username || item.name,
+        profilePicture: data.profile_picture_url || "",
+        permalink: data.permalink || "",
+        createdAt: Date.now(),
+        category: toSoraCategory(item.type),
+        nickname: item.name,
+        fromVideoUrl: data.videoUrl || "",
+        fromTaskId: data.taskId || "",
+      } satisfies SoraCharacter,
+      platform: uploadConfig.platform,
+    };
   }, [resolveUploadImageData]);
 
   const currentWorkspaceItems = useMemo(
@@ -1693,19 +1719,25 @@ export default function LibraryPage() {
   }, [consistency, persistConsistency]);
 
   const handleUploadSingleToSora = useCallback(async (item: DisplayItem) => {
-    const existing = getSoraUploadRecord(item.id);
+    const uploadConfig = resolveSoraUploadConfig();
+    if (!uploadConfig) {
+      alert("请先在设置页配置 Sora 系列模型（含 API Key）");
+      return;
+    }
+
+    const existing = getSoraUploadRecord(item.id, uploadConfig.platform);
     if (
       existing &&
-      !confirm(`「${item.name}」已上传到贞贞工坊（@${existing.username}），是否重新上传？`)
+      !confirm(`「${item.name}」已上传到${uploadConfig.platform}（@${existing.username}），是否重新上传？`)
     ) {
       return;
     }
 
     setUploadingItemId(item.id);
     try {
-      const character = await createSoraCharacter(item);
-      persistSoraUpload(item, character);
-      alert(`✅ 「${item.name}」已成功上传到贞贞工坊-Sora\n@${character.username}`);
+      const { character, platform } = await createSoraCharacter(item, uploadConfig);
+      persistSoraUpload(item, character, platform);
+      alert(`✅ 「${item.name}」已成功上传到${platform}-Sora\n@${character.username}`);
     } catch (err) {
       alert(err instanceof Error ? err.message : "上传失败");
     } finally {
@@ -1725,7 +1757,7 @@ export default function LibraryPage() {
       return;
     }
 
-    if (!confirm(`将当前工作台有参考图的 ${currentUploadCandidates.length} 个${tabLabel} 批量上传到贞贞工坊 Sora 平台。\n\n确定继续？`)) {
+    if (!confirm(`将当前工作台有参考图的 ${currentUploadCandidates.length} 个${tabLabel} 批量上传到${config.platform} Sora 平台。\n\n确定继续？`)) {
       return;
     }
 
@@ -1734,7 +1766,7 @@ export default function LibraryPage() {
     setBatchUploadTasks(currentUploadCandidates.map((item) => ({
       itemId: item.id,
       itemName: item.name,
-      platform: "贞贞工坊",
+      platform: config.platform,
       status: "pending",
       progress: "等待中",
     })));
@@ -1750,12 +1782,12 @@ export default function LibraryPage() {
       );
 
       try {
-        const character = await createSoraCharacter(item, config);
-        persistSoraUpload(item, character);
+        const { character, platform } = await createSoraCharacter(item, config);
+        persistSoraUpload(item, character, platform);
         setBatchUploadTasks((prev) =>
           prev.map((task, taskIndex) =>
             taskIndex === index
-              ? { ...task, status: "success", progress: `✅ @${character.username}` }
+              ? { ...task, platform, status: "success", progress: `✅ @${character.username}` }
               : task
           )
         );
@@ -1959,8 +1991,8 @@ export default function LibraryPage() {
                     : "bg-black/60 text-purple-300 hover:bg-purple-600 hover:text-white"
                 } disabled:opacity-50 disabled:cursor-not-allowed`}
                 title={getSoraUploadRecord(item.id)
-                  ? `已上传到贞贞工坊（@${getSoraUploadRecord(item.id)?.username}）点击重新上传`
-                  : "上传到贞贞工坊-Sora"}
+                  ? `已上传到${getSoraUploadRecord(item.id)?.platform}（@${getSoraUploadRecord(item.id)?.username}）点击重新上传`
+                  : "上传到当前 Sora 平台"}
               >
                 {uploadingItemId === item.id ? <Loader size={12} className="animate-spin" /> : <ExternalLink size={11} />}
               </button>
@@ -2321,7 +2353,7 @@ export default function LibraryPage() {
             onClick={handleBatchUploadToSora}
             disabled={batchUploadRunning || currentUploadCandidates.length === 0}
             className="flex items-center gap-1.5 px-4 py-2 bg-purple-600/80 text-[12px] font-medium text-white rounded hover:bg-purple-600 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-            title="将当前工作台有参考图的条目批量上传到贞贞工坊 Sora 平台"
+            title="将当前工作台有参考图的条目批量上传到当前 Sora 平台"
           >
             {batchUploadRunning ? <Loader size={13} className="animate-spin" /> : <ExternalLink size={13} />}
             {batchUploadRunning ? "上传中..." : "一键上传 Sora"}
@@ -2929,7 +2961,7 @@ export default function LibraryPage() {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <ExternalLink size={16} className="text-purple-400" />
-                <span className="text-[15px] font-semibold text-[var(--text-primary)]">上传到贞贞工坊-Sora</span>
+                <span className="text-[15px] font-semibold text-[var(--text-primary)]">{batchUploadTasks[0]?.platform ? `上传到${batchUploadTasks[0].platform}-Sora` : "上传到 Sora"}</span>
               </div>
               {batchUploadTasks.every((task) => task.status !== "pending" && task.status !== "uploading") && (
                 <button
@@ -3015,3 +3047,4 @@ export default function LibraryPage() {
     </div>
   );
 }
+

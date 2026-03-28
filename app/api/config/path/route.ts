@@ -71,7 +71,7 @@ export async function POST(request: Request) {
     savePathConfig({ baseOutputDir: resolved });
 
     // Also ensure common sub-directories exist
-    for (const sub of ["ref-images", "grid-images", "videos", "video-frames"]) {
+    for (const sub of ["ref-images", "grid-images", "videos", "video-frames", "flow-images", "flow-data"]) {
       const subDir = path.join(resolved, sub);
       if (!fs.existsSync(subDir)) {
         fs.mkdirSync(subDir, { recursive: true });
@@ -88,3 +88,4 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
+

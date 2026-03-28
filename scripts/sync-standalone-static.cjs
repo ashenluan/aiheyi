@@ -2,12 +2,14 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.resolve(__dirname, '..');
-const distDir = process.env.FEICAI_DIST_DIR || '.next';
-const src = path.join(root, distDir, 'static');
-const standaloneRoot = path.join(root, distDir, 'standalone');
+const sourceDistDir = process.env.FEICAI_NEXT_DIST_DIR || process.env.FEICAI_DIST_DIR || '.next';
+const outputDistDir = process.env.FEICAI_STANDALONE_OUTPUT_DIR || process.env.FEICAI_DIST_DIR || sourceDistDir;
+const src = path.join(root, sourceDistDir, 'static');
+const standaloneSource = path.join(root, sourceDistDir, 'standalone');
+const standaloneRoot = path.join(root, outputDistDir, 'standalone');
 const targets = [
-  path.join(standaloneRoot, distDir, 'static'),
   path.join(standaloneRoot, '.next', 'static'),
+  ...(sourceDistDir !== '.next' ? [path.join(standaloneRoot, sourceDistDir, 'static')] : []),
 ];
 const publicSrc = path.join(root, 'public');
 const publicDst = path.join(standaloneRoot, 'public');
@@ -61,9 +63,15 @@ if (!fs.existsSync(src)) {
   process.exit(0);
 }
 
-if (!fs.existsSync(standaloneRoot)) {
-  console.log('[postbuild] skip: standalone output not present');
+if (!fs.existsSync(standaloneSource)) {
+  console.log('[postbuild] skip: source standalone output not present');
   process.exit(0);
+}
+
+fs.mkdirSync(path.dirname(standaloneRoot), { recursive: true });
+if (standaloneSource !== standaloneRoot) {
+  fs.cpSync(standaloneSource, standaloneRoot, { recursive: true, force: true });
+  console.log(`[postbuild] copied standalone bundle: ${standaloneSource} -> ${standaloneRoot}`);
 }
 
 for (const dst of targets) {

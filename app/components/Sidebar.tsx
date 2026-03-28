@@ -47,10 +47,10 @@ const navItems = [
   { icon: Film, label: "图生视频", href: "/video" },
   { icon: FileText, label: "产出中心", href: "/outputs" },
   { icon: FileCode, label: "提示词编辑", href: "/prompts" },
-  { icon: Bot, label: "Gemini Tab", href: "/gemini-tab" },
+  { icon: Bot, label: "Gemini Tab / Flow", href: "/gemini-tab" },
   { icon: Clapperboard, label: "Seedance", href: "/seedance" },
   { icon: ImageIcon, label: "即梦生图", href: "/jimeng" },
-  { icon: Zap, label: "ComfyUI 工作流", href: "/comfyui", locked: true, badge: "待开发" },
+  { icon: Zap, label: "ComfyUI 工作流", href: "/comfyui" },
   { icon: GraduationCap, label: "模型学习指南", href: "/model-guide" },
   { icon: ShieldAlert, label: "代码报错查询", href: "/error-lookup" },
   { icon: ScrollText, label: "更新日志", href: "/changelog" },
@@ -394,3 +394,5 @@ export default function Sidebar() {
     </>
   );
 }
+
+

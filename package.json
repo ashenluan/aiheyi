@@ -8,7 +8,9 @@
     "build:standalone": "node scripts/build-standalone.cjs",
     "build:turbopack": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "license:generate": "node scripts/generate-license-code.cjs",
+    "license:mock-server": "node scripts/mock-remote-license-server.cjs"
   },
   "dependencies": {
     "lucide-react": "^0.563.0",

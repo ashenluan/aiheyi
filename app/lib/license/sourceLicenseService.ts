@@ -6,6 +6,10 @@ import { DelegatingLicenseVerifier } from "./licenseVerifier";
 import { LocalAppDataLicenseRepository } from "./licenseRepository";
 import type { LicenseVerifier } from "./licenseVerifier";
 import type { LicenseStatus } from "./types";
+import {
+  getRemoteLicenseVerifier,
+  shouldUseRemoteLicenseVerifier,
+} from "./remoteLicenseVerifier";
 
 const DEFAULT_SOURCE_ACTIVATION_CODE = "SOURCE-ALPHA-STUDIO-20991231";
 const DEFAULT_LICENSE_SECRET = "FEICAI-STUDIO-SOURCE-AUTH-2026";
@@ -105,7 +109,7 @@ function buildMachineBoundActivationCode(
   return `${prefix}-${expiryStamp}`;
 }
 
-function createSourceVerifier(): LicenseVerifier {
+function createLocalSourceVerifier(): LicenseVerifier {
   return new DelegatingLicenseVerifier(({ activationCode, machineCodes }) => {
     const acceptedCode =
       (process.env.FEICAI_SOURCE_ACTIVATION_CODE ?? DEFAULT_SOURCE_ACTIVATION_CODE)
@@ -163,6 +167,31 @@ function createSourceVerifier(): LicenseVerifier {
       expiry: "2099-12-31",
       daysLeft: 9999,
     };
+  });
+}
+
+function shouldFallbackToLocalVerifier(): boolean {
+  return isTruthyEnv(process.env.FEICAI_LICENSE_REMOTE_FALLBACK_LOCAL);
+}
+
+function createSourceVerifier(): LicenseVerifier {
+  const localVerifier = createLocalSourceVerifier();
+  if (!shouldUseRemoteLicenseVerifier()) {
+    return localVerifier;
+  }
+
+  const remoteVerifier = getRemoteLicenseVerifier();
+  if (!shouldFallbackToLocalVerifier()) {
+    return remoteVerifier;
+  }
+
+  return new DelegatingLicenseVerifier(async (context) => {
+    try {
+      return await remoteVerifier.verify(context);
+    } catch (error) {
+      console.warn("[license] 远程校验失败，回退本地校验:", error instanceof Error ? error.message : error);
+      return localVerifier.verify(context);
+    }
   });
 }
 

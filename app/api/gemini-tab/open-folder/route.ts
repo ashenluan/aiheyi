@@ -13,13 +13,16 @@ function buildTargets() {
   const geminiRoot = fs.existsSync(resolveProjectFile("GeminiTab-dist"))
     ? resolveProjectFile("GeminiTab-dist")
     : resolveProjectFile("GeminiTab");
+  const outputsRoot = getBaseOutputDir();
+
   return {
     projectRoot: root,
     geminiRoot,
     geminiBrowserData: path.join(geminiRoot, "browser-data"),
     geminiDebugScreenshots: path.join(geminiRoot, "debug-screenshots"),
     geminiTempUploads: path.join(geminiRoot, "temp-uploads"),
-    outputsRoot: getBaseOutputDir(),
+    outputsRoot,
+    flowImages: path.join(outputsRoot, "flow-images"),
   };
 }
 
@@ -88,7 +91,9 @@ export async function POST(request: Request) {
         ? "geminiTempUploads"
         : type === "outputs" || type === "grid-images"
           ? "outputsRoot"
-          : "";
+          : type === "flow-images"
+            ? "flowImages"
+            : "";
     const folderPath = ensureTargetPath(rawPath || target || compatTarget || "outputsRoot");
     openFolder(folderPath);
     return NextResponse.json({

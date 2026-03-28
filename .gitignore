@@ -58,3 +58,6 @@ test-image.png
 feicai-custom-presets.json
 feicai-paths.json
 pending-scripts.json
+/.n/
+/.next-standalone-probe/
+
